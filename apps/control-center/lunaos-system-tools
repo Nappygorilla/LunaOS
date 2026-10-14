@@ -461,6 +461,10 @@ def updates_install():
 
 
 def write_systemd_timer(service_path, timer_path, service_text, timer_text):
+    marker = "# Managed by LunaOS Control Center."
+    for existing in (service_path, timer_path):
+        if existing.exists() and not existing.read_text(encoding="utf-8", errors="replace").startswith(marker):
+            raise ToolError(f"Refusing to overwrite an unmanaged systemd unit: {existing}")
     atomic_write(service_path, service_text, 0o644)
     atomic_write(timer_path, timer_text, 0o644)
     run(["/usr/bin/systemctl", "daemon-reload"], timeout=60)
