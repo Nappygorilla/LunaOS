@@ -166,7 +166,20 @@ def main():
     listing.currentItemChanged.connect(lambda item, _old: select_profile(item) if item else None)
     reset.clicked.connect(lambda: select_profile())
     apply.clicked.connect(apply_profile)
-    listing.setCurrentRow(0)
+    preferred = read_json(USER_STATE, {}).get("profile")
+    if not preferred:
+        preferred = read_json(Path.home() / ".config/lunaos/preferences.json", {}).get("preferred_profile")
+    if not preferred:
+        try:
+            preferred = Path("/etc/lunaos/default-profile").read_text(encoding="utf-8").strip()
+        except OSError:
+            preferred = None
+    start_row = 0
+    for index in range(listing.count()):
+        if listing.item(index).data(Qt.ItemDataRole.UserRole) == preferred:
+            start_row = index
+            break
+    listing.setCurrentRow(start_row)
     window.show()
     return app.exec()
 

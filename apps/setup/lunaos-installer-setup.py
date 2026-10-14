@@ -174,11 +174,12 @@ def main():
     profile_id = PROFILE_CHOICES[profile.currentText()] if use_settings.isChecked() else "balanced"
     custom_mode = "personal" if wants_account else "guest"
     apply_settings = "yes" if use_settings.isChecked() else "no"
+    module_list = ",".join(name for name in included if name in ({"base", "desktop"} | MODULE_IDS))
     install_command = (
         "curl -fsSL --proto '=https' --tlsv1.2 "
         f"https://raw.githubusercontent.com/Nappygorilla/LunaOS/{revision}/scripts/install-target-firstboot.sh "
         "-o /tmp/lunaos-install-target-firstboot.sh && "
-        f"/bin/bash /tmp/lunaos-install-target-firstboot.sh {custom_mode} {apply_settings} {profile_id} {revision}"
+        f"/bin/bash /tmp/lunaos-install-target-firstboot.sh {custom_mode} {apply_settings} {profile_id} {revision} {module_list}"
     )
     config = {
         "archinstall-language": "English",

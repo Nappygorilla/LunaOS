@@ -5,10 +5,15 @@ MODE="$1"
 APPLY_SETTINGS="$2"
 PROFILE_ID="$3"
 SOURCE_REV="$4"
+MODULE_LIST="$5"
 case "$MODE" in personal|guest) ;; *) echo "Invalid LunaOS account mode." >&2; exit 2 ;; esac
 case "$APPLY_SETTINGS" in yes|no) ;; *) echo "Invalid desktop settings choice." >&2; exit 2 ;; esac
 case "$PROFILE_ID" in balanced|gaming|coding|creator|privacy|secure|battery-saver) ;; *) echo "Invalid default profile." >&2; exit 2 ;; esac
 [[ "$SOURCE_REV" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid pinned LunaOS source revision." >&2; exit 2; }
+[[ "$MODULE_LIST" =~ ^[a-z0-9]+(,[a-z0-9]+)*$ ]] || { echo "Invalid module manifest." >&2; exit 2; }
+OLD_IFS="$IFS"; IFS=","
+for module in $MODULE_LIST; do case "$module" in base|desktop|security|privacy|performance|gaming|coding|creator) ;; *) echo "Unrecognized module in manifest." >&2; exit 2 ;; esac; done
+IFS="$OLD_IFS"
 BASE_URL="https://raw.githubusercontent.com/Nappygorilla/LunaOS/$SOURCE_REV"
 TMP_DIR="$(mktemp -d /tmp/lunaos-target-setup.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -25,7 +30,15 @@ for name in base desktop security privacy performance gaming coding creator; do
   fetch "config/packages/$name.packages" "/usr/share/lunaos/package-modules/$name.packages" 0644
 done
 fetch "config/modules.toml" /usr/share/lunaos/modules.toml 0644
-fetch "config/build-modules.default.json" /usr/share/lunaos/build-modules.json 0644
+{
+  printf '{"included_modules":['
+  separator=""
+  OLD_IFS="$IFS"; IFS=","
+  for module in $MODULE_LIST; do printf '%s"%s"' "$separator" "$module"; separator=","; done
+  IFS="$OLD_IFS"
+  printf ']}\n'
+} > /usr/share/lunaos/build-modules.json
+chmod 0644 /usr/share/lunaos/build-modules.json
 fetch "assets/lunaos-wallpaper.svg" /usr/share/backgrounds/lunaos/lunaos-wallpaper.svg 0644
 fetch "apps/control-center/lunaos-control-center.py" /usr/lib/lunaos/lunaos-control-center.py 0755
 fetch "apps/control-center/lunaos-profile-apply" /usr/lib/lunaos/lunaos-profile-apply 0755

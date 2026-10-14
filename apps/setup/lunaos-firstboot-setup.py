@@ -62,7 +62,7 @@ def main():
     profile = QComboBox()
     profile.addItems(PROFILE_NAMES.keys())
     profile.setCurrentText("Balanced")
-    profile.setToolTip("This sets the preferred profile in your user settings; system-wide profile changes remain in Control Center.")
+    profile.setToolTip("Saves the preferred profile for Control Center; system-wide changes require administrator credentials.")
     personal_form = QFormLayout()
     personal_form.addRow("Preferred Control Center profile", profile)
     personal_layout.addLayout(personal_form)
@@ -70,7 +70,7 @@ def main():
 
     account = QGroupBox("Create a personal account (optional)")
     account_layout = QVBoxLayout(account)
-    create_account = QCheckBox("Create a personal account now")
+    create_account = QCheckBox("Create a standard personal account now")
     account_layout.addWidget(create_account)
     fields = QFormLayout()
     username = QLineEdit()
@@ -81,21 +81,18 @@ def main():
     confirmation = QLineEdit()
     confirmation.setEchoMode(QLineEdit.EchoMode.Password)
     confirmation.setPlaceholderText("Repeat password")
-    administrator = QCheckBox("Grant administrator permissions to this account")
-    administrator.setChecked(True)
     fields.addRow("Username", username)
     fields.addRow("Password", password)
     fields.addRow("Confirm password", confirmation)
     account_layout.addLayout(fields)
-    account_layout.addWidget(administrator)
-    account_note = QLabel("An account created here is separate from luna-guest. Administrator access is controlled by the checkbox. If you skip account creation, this session stays non-admin.")
+    account_note = QLabel("A personal account created here is standard and does not receive administrator access. To create an administrator account, select account creation in the installer and explicitly enable its administrator option. Skipping account creation keeps the existing guest session restricted.")
     account_note.setWordWrap(True)
     account_note.setObjectName("muted")
     account_layout.addWidget(account_note)
     outer.addWidget(account)
 
     def set_account_fields(enabled):
-        for item in (username, password, confirmation, administrator):
+        for item in (username, password, confirmation):
             item.setEnabled(enabled)
     create_account.toggled.connect(set_account_fields)
     set_account_fields(False)
@@ -114,8 +111,10 @@ def main():
     state_dir = Path.home() / ".config/lunaos"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "preferences.json").write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
+    autostart = Path.home() / ".config/autostart/lunaos-firstboot-setup.desktop"
     if not create_account.isChecked():
-        QMessageBox.information(dialog, "Setup complete", settings_message + "\n\nAccount creation skipped. This session remains restricted: it is not an administrator and cannot use sudo. Open LunaOS First-run Setup later from the application menu to try account creation again.")
+        autostart.unlink(missing_ok=True)
+        QMessageBox.information(dialog, "Setup complete", settings_message + "\n\nAccount creation skipped. This session remains restricted: it is not an administrator and cannot use sudo. You can reopen LunaOS First-run Setup from the application menu later.")
         return 0
 
     account_name = username.text().strip()
@@ -126,7 +125,7 @@ def main():
     if len(secret) < 12 or secret != confirmation.text() or "\n" in secret or ":" in secret or "\r" in secret:
         QMessageBox.warning(dialog, "Check password", "Passwords must match, be at least 12 characters, and contain no colon or newline.")
         return 1
-    payload = {"username": account_name, "password": secret, "administrator": administrator.isChecked()}
+    payload = {"username": account_name, "password": secret}
     try:
         result = subprocess.run(["pkexec", HELPER], input=json.dumps(payload) + "\n", text=True, capture_output=True, timeout=90, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -137,7 +136,8 @@ def main():
     if result.returncode:
         QMessageBox.warning(dialog, "Account not created", (result.stderr or result.stdout or "The first-user setup helper declined the request.").strip()[-1600:])
         return 1
-    QMessageBox.information(dialog, "Personal account created", settings_message + "\n\nAccount created. Sign out, then sign in with your new username. Administrator permissions were " + ("granted because you explicitly selected them." if administrator.isChecked() else "not granted."))
+    autostart.unlink(missing_ok=True)
+    QMessageBox.information(dialog, "Personal account created", settings_message + "\n\nYour personal account has standard, non-administrator permissions. Sign out, then sign in with your new username.")
     return 0
 
 

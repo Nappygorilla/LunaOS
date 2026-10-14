@@ -66,3 +66,12 @@ These settings are not guaranteed FPS increases. Kernel command-line changes are
 Read docs/security-model.md before changing the privileged helper. LunaOS is an independent experimental project, not an official Arch Linux or KDE release.
 
 References: https://wiki.archlinux.org/title/Archiso · https://doc.qt.io/qtforpython-6/ · https://www.freedesktop.org/software/polkit/docs/latest/
+
+
+## Optional setup and account permissions
+
+The LunaOS installer lets users skip desktop personalization and personal-account creation independently. Disk selection remains manual. If account creation is skipped, the installed machine uses an auto-login luna-guest account that is not in wheel and has no sudo privileges. A first-run screen can create a standard non-admin personal account later; it does not grant administrator access.
+
+Administrator permission is opt-in during installation. If a user skips the account step, LunaOS does not create an administrator account behind their back. To have administrator access, select personal account creation in the installer and explicitly enable the administrator option.
+
+Read docs/first-boot-and-accounts.md and docs/security-model.md before testing. This feature is experimental and needs an end-to-end Archinstall VM test.

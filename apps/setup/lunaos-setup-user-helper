@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-time first-user creator. No arbitrary commands or groups are accepted."""
+"""Create one standard personal account. This helper can never grant admin rights."""
 import json
 import os
 import pwd
@@ -11,7 +11,6 @@ from pathlib import Path
 
 STATE_DIR = Path("/etc/lunaos")
 LOCK_FILE = STATE_DIR / "personal-account-created"
-SUDOERS_FILE = Path("/etc/sudoers.d/10-lunaos-wheel")
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}\$?$")
 RESERVED = {"root", "nobody", "luna", "luna-guest", "bin", "daemon", "adm", "mail", "ftp", "http"}
 
@@ -63,38 +62,30 @@ def main():
     try:
         raw = sys.stdin.read(8192)
         payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"username", "password"}:
+            raise SetupError("Only username and password fields are accepted.")
         username = payload.get("username")
         password = payload.get("password")
-        administrator = payload.get("administrator")
         if not isinstance(username, str) or not USERNAME_RE.fullmatch(username) or username in RESERVED:
             raise SetupError("Invalid or reserved username.")
         if not isinstance(password, str) or len(password) < 12 or ":" in password or "\n" in password or "\r" in password:
             raise SetupError("Password must be at least 12 characters and contain no colon or newline.")
-        if type(administrator) is not bool:
-            raise SetupError("Administrator choice must be true or false.")
+        try:
+            pwd.getpwnam(username)
+            raise SetupError("That username already exists.")
+        except KeyError:
+            pass
         if LOCK_FILE.exists() or existing_personal_users():
             raise SetupError("A personal account already exists. Refusing to create another first account.")
-        if administrator:
-            result = run(["/usr/bin/getent", "group", "wheel"], check=False)
-            if result.returncode != 0:
-                raise SetupError("The wheel group is unavailable.")
-            if SUDOERS_FILE.exists():
-                content = SUDOERS_FILE.read_text(encoding="utf-8")
-                if not content.startswith("# Managed by LunaOS first-user setup."):
-                    raise SetupError("Refusing to overwrite an unmanaged sudoers file.")
         run(["/usr/bin/useradd", "--create-home", "--shell", "/bin/bash", username])
         try:
             run(["/usr/bin/chpasswd"], input_text=f"{username}:{password}\n")
-            if administrator:
-                run(["/usr/bin/usermod", "-aG", "wheel", username])
-                atomic_write(SUDOERS_FILE, "# Managed by LunaOS first-user setup.\n%wheel ALL=(ALL:ALL) ALL\n", 0o440)
-                run(["/usr/bin/visudo", "-cf", str(SUDOERS_FILE)])
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             atomic_write(LOCK_FILE, username + "\n", 0o600)
         except Exception:
             run(["/usr/bin/userdel", "--remove", username], check=False)
             raise
-        print(f"Created personal account {username}. Administrator access: {'enabled by explicit selection' if administrator else 'not granted'}.")
+        print(f"Created standard personal account {username}. Administrator access was not granted.")
         return 0
     except (SetupError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
         print("LunaOS account setup refused: " + str(exc), file=sys.stderr)

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if ! id luna >/dev/null 2>&1; then
-  useradd --create-home --user-group --shell /bin/bash --groups wheel,audio,video,storage,optical,lp luna
+  useradd --create-home --user-group --shell /bin/bash --groups audio,video,storage,optical,lp luna
 fi
 mkdir -p /home/luna/.config /home/luna/Desktop /var/lib/lunaos
 cp -an /etc/skel/. /home/luna/ 2>/dev/null || true
 chown -R luna:luna /home/luna
 chmod 0700 /home/luna
-passwd -d luna >/dev/null 2>&1 || true
+# The live account is not a system administrator. Sudo is limited to the installer.
 visudo -cf /etc/sudoers.d/10-lunaos-live >/dev/null
 install -m 0644 /usr/share/lunaos/lunaos-release /var/lib/lunaos/release
 : > /var/lib/lunaos/live-setup-complete
