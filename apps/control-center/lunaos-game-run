@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Use GameMode when enabled in the current user's LunaOS settings."""
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+if len(sys.argv) < 2:
+    print("Usage: lunaos-game-run COMMAND [ARG ...]", file=sys.stderr)
+    raise SystemExit(2)
+state_path = Path.home() / ".config/lunaos/active.json"
+try:
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+except (OSError, json.JSONDecodeError):
+    state = {}
+command = sys.argv[1:]
+if state.get("modules", {}).get("gaming", False):
+    wrapper = shutil.which("gamemoderun")
+    if wrapper:
+        command = [wrapper, *command]
+    else:
+        print("GameMode is unavailable; launching normally.", file=sys.stderr)
+os.execvp(command[0], command)

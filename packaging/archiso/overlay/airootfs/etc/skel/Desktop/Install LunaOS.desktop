@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Install LunaOS
+Comment=Open the guided Arch Linux installer
+Exec=/usr/local/bin/lunaos-installer-launcher
+Icon=system-software-install
+Terminal=false
+Categories=System;

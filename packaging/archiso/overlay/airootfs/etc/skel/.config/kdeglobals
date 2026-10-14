@@ -1,0 +1,9 @@
+[General]
+ColorScheme=BreezeDark
+Name=LunaOS
+
+[Icons]
+Theme=breeze-dark
+
+[KDE]
+LookAndFeelPackage=org.kde.breezedark.desktop

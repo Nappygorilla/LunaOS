@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LunaOS Control Center
+Comment=Choose desktop profiles and configure system features
+Exec=lunaos-control-center
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;

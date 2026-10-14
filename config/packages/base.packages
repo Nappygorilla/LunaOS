@@ -1,0 +1,24 @@
+# Required base utilities
+base
+linux
+linux-firmware
+sudo
+polkit
+bash-completion
+networkmanager
+bluez
+bluez-utils
+pipewire
+pipewire-alsa
+pipewire-pulse
+wireplumber
+curl
+wget
+rsync
+unzip
+zip
+tree
+man-db
+man-pages
+fastfetch
+btop

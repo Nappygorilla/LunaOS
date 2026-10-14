@@ -1,0 +1,2 @@
+# Disposable live account only. Never copy to an installed system.
+luna ALL=(ALL:ALL) NOPASSWD: ALL

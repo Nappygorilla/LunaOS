@@ -1,0 +1,3 @@
+{
+  "included_modules": ["base", "desktop", "security", "privacy", "performance", "gaming", "coding", "creator"]
+}

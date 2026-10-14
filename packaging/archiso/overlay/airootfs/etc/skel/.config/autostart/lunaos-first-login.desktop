@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=LunaOS first-login setup
+Exec=/usr/local/bin/lunaos-first-login
+OnlyShowIn=KDE;
+X-KDE-autostart-after=panel

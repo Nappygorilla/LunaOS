@@ -1,0 +1,21 @@
+[profile]
+id = "privacy"
+name = "Privacy-first"
+category = "Privacy"
+description = "Firewall and managed Firefox policies; performance tuning returns to baseline."
+
+[modules]
+security = true
+privacy = true
+performance = false
+gaming = false
+coding = false
+creator = false
+
+[settings]
+power_profile = "balanced"
+swappiness = 60
+
+[sysctl]
+"kernel.kptr_restrict" = 2
+"kernel.dmesg_restrict" = 1

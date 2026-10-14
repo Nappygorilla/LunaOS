@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Root-only allowlisted profile applier. Profile data is never executed as a command."""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+import tomllib
+
+PROFILE_DIR = Path("/usr/share/lunaos/profiles")
+STATE_DIR = Path("/var/lib/lunaos")
+STATE_FILE = STATE_DIR / "control-center-state.json"
+SYSCTL_FILE = Path("/etc/sysctl.d/99-lunaos-profile.conf")
+FIREFOX_FILE = Path("/etc/firefox/policies/policies.json")
+SYSCTLS = {"vm.swappiness": ("vm/swappiness", 0, 100), "kernel.kptr_restrict": ("kernel/kptr_restrict", 0, 2), "kernel.dmesg_restrict": ("kernel/dmesg_restrict", 0, 1)}
+PRIVACY_POLICIES = {"DisableTelemetry": True, "DisableFirefoxStudies": True, "DisablePocket": True}
+PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+class ApplyError(RuntimeError):
+    pass
+
+
+def run(argv, check=True):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=45, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ApplyError(f"Could not run {argv[0]}: {exc}") from exc
+    if check and result.returncode:
+        raise ApplyError((result.stderr or result.stdout or f"{argv[0]} failed").strip())
+    return result
+
+
+def atomic_write(path, text, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name, dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def read_sysctl(key):
+    path = Path("/proc/sys").joinpath(*SYSCTLS[key][0].split("/"))
+    try:
+        return int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError) as exc:
+        raise ApplyError(f"Cannot read {key}: {exc}") from exc
+
+
+def read_policy():
+    if not FIREFOX_FILE.exists():
+        return {"policies": {}}, False
+    try:
+        data = json.loads(FIREFOX_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ApplyError(f"Existing Firefox policy JSON is invalid: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("policies", {}), dict):
+        raise ApplyError("Firefox policies.json must contain a policies object.")
+    data.setdefault("policies", {})
+    return data, True
+
+
+def get_power_profile():
+    binary = shutil.which("powerprofilesctl")
+    if not binary:
+        return None
+    result = run([binary, "get"], check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value in {"power-saver", "balanced", "performance"} else None
+
+
+def load_profile(ident):
+    if not PROFILE_ID.fullmatch(ident):
+        raise ApplyError("Invalid profile identifier.")
+    path = PROFILE_DIR / (ident + ".toml")
+    if not path.is_file():
+        raise ApplyError("Unknown installed profile: " + ident)
+    with path.open("rb") as stream:
+        data = tomllib.load(stream)
+    if data.get("profile", {}).get("id") != ident:
+        raise ApplyError("Profile ID does not match its filename.")
+    modules = data.get("modules", {})
+    if any(type(value) is not bool for value in modules.values()):
+        raise ApplyError("Module flags must be booleans.")
+    settings = data.get("settings", {})
+    if settings.get("power_profile", "balanced") not in {"power-saver", "balanced", "performance"}:
+        raise ApplyError("Unsupported power profile.")
+    swappiness = settings.get("swappiness", 60)
+    if type(swappiness) is not int or not 0 <= swappiness <= 100:
+        raise ApplyError("vm.swappiness must be an integer from 0 to 100.")
+    values = data.get("sysctl", {})
+    if set(values) - set(SYSCTLS):
+        raise ApplyError("Profile contains a non-allowlisted sysctl.")
+    for key, value in values.items():
+        if type(value) is not int or not SYSCTLS[key][1] <= value <= SYSCTLS[key][2]:
+            raise ApplyError("Out-of-range value for " + key)
+    return data
+
+
+def load_state():
+    if STATE_FILE.exists():
+        try:
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("original_sysctl"), dict):
+                return data
+            raise ValueError("baseline data missing")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ApplyError(f"Existing LunaOS state is invalid: {exc}") from exc
+    document, existed = read_policy()
+    original_policies = {key: {"exists": key in document["policies"], "value": document["policies"].get(key)} for key in PRIVACY_POLICIES}
+    return {"schema": 1, "original_sysctl": {key: read_sysctl(key) for key in SYSCTLS}, "original_power_profile": get_power_profile(), "original_firefox_file_exists": existed, "original_firefox_policies": original_policies, "owns_sysctl_file": False, "modules": {}, "active_profile": None}
+
+
+def save_state(state):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write(STATE_FILE, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o644)
+
+
+def apply_sysctls(profile, modules, state):
+    values = {}
+    if modules.get("security", False):
+        values.update(profile.get("sysctl", {}))
+    if modules.get("performance", False):
+        values["vm.swappiness"] = profile.get("settings", {}).get("swappiness", 60)
+    if SYSCTL_FILE.exists() and not state.get("owns_sysctl_file", False):
+        lines = SYSCTL_FILE.read_text(encoding="utf-8").splitlines()
+        if not lines or not lines[0].startswith("# Managed by LunaOS Control Center."):
+            raise ApplyError("Refusing to overwrite a user-managed sysctl file: " + str(SYSCTL_FILE))
+        state["owns_sysctl_file"] = True
+    if values:
+        lines = ["# Managed by LunaOS Control Center. Do not hand-edit while profiles are active."]
+        lines.extend(f"{key} = {values[key]}" for key in sorted(values))
+        atomic_write(SYSCTL_FILE, "\n".join(lines) + "\n")
+        state["owns_sysctl_file"] = True
+        save_state(state)
+    elif state.get("owns_sysctl_file", False):
+        try:
+            SYSCTL_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        state["owns_sysctl_file"] = False
+        save_state(state)
+    for key in SYSCTLS:
+        target = values.get(key, state["original_sysctl"][key])
+        run(["/usr/bin/sysctl", "-w", f"{key}={target}"])
+
+
+def apply_firewall(enabled):
+    service_file = Path("/usr/lib/systemd/system/firewalld.service")
+    if not service_file.exists():
+        return "Firewall unavailable: firewalld is not included in this image."
+    if enabled:
+        run(["/usr/bin/systemctl", "enable", "--now", "firewalld.service"])
+        return "Firewall enabled and started."
+    run(["/usr/bin/systemctl", "disable", "--now", "firewalld.service"])
+    return "Firewall stopped and disabled."
+
+
+def apply_privacy(enabled, state):
+    document, unused = read_policy()
+    policies = document["policies"]
+    if enabled:
+        policies.update(PRIVACY_POLICIES)
+    else:
+        for key in PRIVACY_POLICIES:
+            original = state["original_firefox_policies"].get(key, {"exists": False})
+            if original.get("exists"):
+                policies[key] = original.get("value")
+            else:
+                policies.pop(key, None)
+    if not state["original_firefox_file_exists"] and not policies:
+        try:
+            FIREFOX_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    atomic_write(FIREFOX_FILE, json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+
+def apply_power(profile, modules, state):
+    binary = shutil.which("powerprofilesctl")
+    if not binary:
+        return "Power profile unavailable: power-profiles-daemon is not installed."
+    wanted = profile.get("settings", {}).get("power_profile", "balanced") if modules.get("performance", False) else (state.get("original_power_profile") or "balanced")
+    result = run([binary, "set", wanted], check=False)
+    if result.returncode:
+        return "Power profile could not be changed: " + (result.stderr or result.stdout).strip()
+    return "Power profile set to " + wanted + "."
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("profile")
+    for module in ("security", "privacy", "performance", "gaming"):
+        parser.add_argument("--" + module, choices=("on", "off"))
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        print("Must be launched through pkexec.", file=sys.stderr)
+        return 2
+    try:
+        profile = load_profile(args.profile)
+        modules = {key: bool(value) for key, value in profile.get("modules", {}).items()}
+        for module in ("security", "privacy", "performance", "gaming"):
+            value = getattr(args, module)
+            if value is not None:
+                modules[module] = value == "on"
+        state = load_state()
+        save_state(state)
+        apply_sysctls(profile, modules, state)
+        notes = [apply_power(profile, modules, state), apply_firewall(modules.get("security", False))]
+        apply_privacy(modules.get("privacy", False), state)
+        state["active_profile"] = args.profile
+        state["modules"] = modules
+        state["settings"] = profile.get("settings", {})
+        state["updated_at_epoch"] = int(time.time())
+        save_state(state)
+        if modules.get("gaming", False) and not shutil.which("gamemoderun"):
+            notes.append("GameMode selected but gamemoderun missing; include the gaming module in your build.")
+        print("Applied LunaOS profile: " + profile["profile"].get("name", args.profile))
+        print("\n".join(notes))
+        return 0
+    except (ApplyError, OSError, ValueError, KeyError) as exc:
+        print("LunaOS profile apply failed: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
