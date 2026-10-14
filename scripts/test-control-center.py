@@ -32,7 +32,7 @@ assert "os.execv(binary, [binary])" in tools
 
 ui = file_map["ui"].read_text(encoding="utf-8")
 for token in (
-    "Power modes", "Cooling and fan control", "System snapshots", "Developer tools",
+    "Power modes", "Cooling and fan control", "System snapshots", "Personal file backups", "Quick launch", "Welcome to LunaOS", "Developer tools",
     "System updates", "Install all updates", "Important update compatibility warning",
     "QProgressBar", "SUPPORT_ISSUES_URL", "notifications_enabled", "download-schedule",
     "reboot-schedule", "changelog", "schedule_install_at",
@@ -59,3 +59,8 @@ assert "lunaos-update-agent" in autostart.read_text(encoding="utf-8")
 assert "pacman-contrib" in (ROOT / "config/packages/base.packages").read_text(encoding="utf-8")
 
 print("PASS: Control Center feature, update safety, schedule, and notification smoke checks")
+
+# Personal backup must reject path traversal and special files and restore into a new folder.
+assert "PurePosixPath(member.name).is_absolute()" in file_map["ui"].read_text(encoding="utf-8")
+assert "target.open(\"xb\")" in file_map["ui"].read_text(encoding="utf-8")
+assert "archive.extractfile(member)" in file_map["ui"].read_text(encoding="utf-8")
