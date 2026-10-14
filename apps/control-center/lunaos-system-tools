@@ -423,7 +423,8 @@ def run_streaming(argv, timeout=3600):
         while True:
             line = process.stdout.readline()
             if line:
-                print(sanitize_text(line, 8000), end="\n" if not line.endswith("\n") else "", flush=True)
+                clean_line = sanitize_text(line, 8000)
+                print(clean_line, end="\n" if line.endswith("\n") else "", flush=True)
             if process.poll() is not None:
                 remainder = process.stdout.read()
                 if remainder:
