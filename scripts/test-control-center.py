@@ -23,7 +23,7 @@ for token in (
     "timeshift", "pwmconfig", "fancontrol.service", "power-profiles-daemon.service",
     "snapshot-create", "snapshot-list", "checkupdates", "updates-details", "updates-install",
     "download-schedule", "reboot-schedule", "SECURITY_CHANGE_RE", "CORE_SYSTEM_RE",
-    "Persistent=false", "lunaos-update-download-state.json",
+    "Persistent=false", "update-download-state.json",
 ):
     assert token in tools, "missing helper safety/feature token: " + token
 assert "subprocess.run(argv" in tools
