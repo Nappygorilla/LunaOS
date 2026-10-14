@@ -829,7 +829,7 @@ def main():
             update_list.setCurrentRow(0)
         if update_operation.get("scheduled") and update_operation.get("kind") == "":
             update_operation["scheduled"] = False
-            QTimer.singleShot(350, lambda: begin_install(prepared=True, scheduled=True))
+            QTimer.singleShot(350, lambda: begin_install(prepared=False, scheduled=True))
 
     def start_update_process(kind, args=(), scheduled=False):
         if update_process.state() != QProcess.ProcessState.NotRunning:
@@ -912,8 +912,19 @@ def main():
             update_status.setText("Update operation completed.")
         update_operation["seen"] = set()
 
+    def update_process_error(_error):
+        if update_process.state() == QProcess.ProcessState.NotRunning and update_operation.get("kind"):
+            update_check_btn.setEnabled(True)
+            update_download_btn.setEnabled(True)
+            update_install_btn.setEnabled(True)
+            update_progress.setRange(0, 100)
+            update_progress.setFormat("Failed to start")
+            update_status.setText("Could not start the update helper. Check that PolicyKit and the LunaOS system-tools helper are installed.")
+            update_operation["kind"] = ""
+
     update_process.readyReadStandardOutput.connect(handle_update_output)
     update_process.finished.connect(finish_update_process)
+    update_process.errorOccurred.connect(update_process_error)
 
     def begin_install(prepared=False, scheduled=False):
         if not update_entries:
