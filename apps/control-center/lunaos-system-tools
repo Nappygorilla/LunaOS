@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Constrained privileged actions for LunaOS Control Center.
+
+All package names, service names, power modes, and operations are allowlisted.
+This helper intentionally does not accept arbitrary commands or package names.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+BUNDLES = {
+    "power": ["power-profiles-daemon", "lm_sensors"],
+    "snapshots": ["timeshift"],
+    "ide-geany": ["geany"],
+    "ide-kdevelop": ["kdevelop", "kdevelop-python", "kdevelop-php"],
+    "ide-qtcreator": ["qtcreator"],
+    "ide-gnome-builder": ["gnome-builder"],
+    "toolchain-python": ["python", "python-pip", "python-virtualenv", "python-pytest"],
+    "toolchain-node": ["nodejs", "npm"],
+    "toolchain-rust": ["rust"],
+    "toolchain-go": ["go"],
+    "toolchain-cpp": ["base-devel", "cmake", "gdb", "clang"],
+    "docker": ["docker", "docker-compose", "docker-buildx"],
+}
+POWER_MODES = {"power-saver", "balanced", "performance"}
+SERVICE_ALLOWLIST = {
+    "power-profiles-daemon.service",
+    "fancontrol.service",
+    "cronie.service",
+    "docker.service",
+}
+TIMESHIFT = "/usr/bin/timeshift"
+PACMAN = "/usr/bin/pacman"
+
+
+class ToolError(RuntimeError):
+    pass
+
+
+def run(argv, timeout=120, check=True):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(f"Could not run {argv[0]}: {exc}") from exc
+    output = (result.stdout or "").strip()
+    error = (result.stderr or "").strip()
+    if check and result.returncode:
+        raise ToolError(error or output or f"{argv[0]} failed with exit code {result.returncode}")
+    return result.returncode, output, error
+
+
+def emit_json(data):
+    print(json.dumps(data, separators=(",", ":")))
+
+
+def require_root():
+    if os.geteuid() != 0:
+        raise ToolError("This action requires administrator authentication through PolicyKit.")
+
+
+def power_status():
+    binary = shutil.which("powerprofilesctl")
+    installed = bool(binary)
+    active = None
+    available = []
+    if binary:
+        code, output, _ = run([binary, "get"], check=False)
+        if code == 0 and output in POWER_MODES:
+            active = output
+        code, output, _ = run([binary, "list"], check=False)
+        if code == 0:
+            for mode in re.findall(r"\b(power-saver|balanced|performance)\b", output):
+                if mode in POWER_MODES and mode not in available:
+                    available.append(mode)
+            if active and active not in available:
+                available.append(active)
+    emit_json({"installed": installed, "active": active, "available": available})
+
+
+def hwmon_pwm_detected():
+    roots = Path("/sys/class/hwmon")
+    if not roots.is_dir():
+        return False
+    for path in roots.glob("hwmon*/pwm[0-9]*"):
+        if re.fullmatch(r"pwm\d+", path.name):
+            return True
+    return False
+
+
+def fan_status():
+    sensors_binary = shutil.which("sensors")
+    readings = "lm_sensors is not installed."
+    if sensors_binary:
+        code, output, error = run([sensors_binary, "-A"], timeout=20, check=False)
+        readings = output or error or "No readings were returned by sensors."
+    active_code, active_output, _ = run(
+        ["/usr/bin/systemctl", "is-active", "fancontrol.service"], check=False
+    ) if shutil.which("systemctl") else (1, "unknown", "")
+    config = Path("/etc/fancontrol")
+    emit_json({
+        "sensors_installed": bool(sensors_binary),
+        "readings": readings,
+        "pwm_detected": hwmon_pwm_detected(),
+        "configured": config.is_file() and config.stat().st_size > 0,
+        "active": active_code == 0 and active_output == "active",
+    })
+
+
+def package_install(bundles):
+    requested = sorted(set(bundles))
+    if not requested:
+        raise ToolError("Select at least one allowed bundle.")
+    unknown = set(requested) - set(BUNDLES)
+    if unknown:
+        raise ToolError("Unknown developer bundle: " + ", ".join(sorted(unknown)))
+    packages = sorted({package for bundle in requested for package in BUNDLES[bundle]})
+    if not shutil.which("pacman"):
+        raise ToolError("pacman is not installed; this installer supports Arch-based LunaOS only.")
+    # Arch does not support partial upgrades; keep the system upgrade and package install together.
+    code, output, error = run(
+        [PACMAN, "-Syu", "--needed", "--noconfirm", *packages],
+        timeout=1800,
+        check=False,
+    )
+    if code:
+        raise ToolError((error or output or "pacman failed")[-12000:])
+    notes = [output or "Packages installed."]
+    if "power" in requested:
+        if Path("/usr/lib/systemd/system/power-profiles-daemon.service").exists():
+            _, out, err = run(["/usr/bin/systemctl", "enable", "--now", "power-profiles-daemon.service"], timeout=90, check=False)
+            if err or out:
+                notes.append(out or err)
+    if "snapshots" in requested:
+        if Path("/usr/lib/systemd/system/cronie.service").exists():
+            _, out, err = run(["/usr/bin/systemctl", "enable", "--now", "cronie.service"], timeout=90, check=False)
+            if err or out:
+                notes.append(out or err)
+        notes.append("Open Timeshift to choose a suitable snapshot destination and configure its schedule.")
+    if "docker" in requested:
+        _, out, err = run(["/usr/bin/systemctl", "enable", "--now", "docker.service"], timeout=120, check=False)
+        if err or out:
+            notes.append(out or err)
+        notes.append("Docker service enabled. LunaOS did not add your user to the root-equivalent docker group.")
+    print("\n".join(notes))
+
+
+def set_power(mode):
+    if mode not in POWER_MODES:
+        raise ToolError("Unsupported power mode.")
+    if not shutil.which("powerprofilesctl"):
+        raise ToolError("Power profiles are not installed. Use the Install power + sensor support button.")
+    if not Path("/usr/lib/systemd/system/power-profiles-daemon.service").exists():
+        raise ToolError("power-profiles-daemon.service is not available on this system.")
+    run(["/usr/bin/systemctl", "enable", "--now", "power-profiles-daemon.service"], timeout=90)
+    code, output, error = run(["/usr/bin/powerprofilesctl", "set", mode], timeout=45, check=False)
+    if code:
+        reason = error or output or "This system did not accept that power profile."
+        raise ToolError(reason + "\nSome machines do not expose performance mode; available profiles depend on firmware and drivers.")
+    print("Power mode set to " + mode + ".")
+
+
+def fan_start():
+    config = Path("/etc/fancontrol")
+    if not config.is_file() or config.stat().st_size == 0:
+        raise ToolError("No configured /etc/fancontrol found. Run Guided fan-curve setup first, and only continue if your hardware is supported.")
+    if not Path("/usr/lib/systemd/system/fancontrol.service").exists():
+        raise ToolError("fancontrol.service is not installed. Install sensor support first.")
+    run(["/usr/bin/systemctl", "enable", "--now", "fancontrol.service"], timeout=90)
+    print("Configured fancontrol service enabled. Check temperatures and RPM readings after changing cooling behavior.")
+
+
+def fan_stop():
+    if not Path("/usr/lib/systemd/system/fancontrol.service").exists():
+        print("fancontrol.service is not installed; firmware/automatic fan control was not changed.")
+        return
+    run(["/usr/bin/systemctl", "disable", "--now", "fancontrol.service"], timeout=90, check=False)
+    print("Software fancontrol stopped and disabled. Firmware control should resume where supported.")
+
+
+def fan_configure():
+    binary = shutil.which("pwmconfig")
+    if not binary:
+        raise ToolError("pwmconfig is unavailable. Install sensor support first.")
+    # Replace this process so interactive prompts remain attached to the user's terminal.
+    os.execv(binary, [binary])
+
+
+def snapshot_list():
+    if not Path(TIMESHIFT).is_file():
+        raise ToolError("Timeshift is not installed. Use Install Timeshift first.")
+    code, output, error = run([TIMESHIFT, "--list", "--scripted"], timeout=180, check=False)
+    if code:
+        raise ToolError(error or output or "Could not list Timeshift snapshots.")
+    print(output or "No Timeshift snapshots were reported. Configure a backup device in Timeshift.")
+
+
+def snapshot_create(comment):
+    if not Path(TIMESHIFT).is_file():
+        raise ToolError("Timeshift is not installed. Use Install Timeshift first.")
+    comment = comment.strip()
+    if not comment or len(comment) > 80 or not re.fullmatch(r"[A-Za-z0-9 _.,():+-]+", comment):
+        raise ToolError("Snapshot descriptions must be 1–80 characters and use letters, numbers, spaces, or basic punctuation.")
+    code, output, error = run(
+        [TIMESHIFT, "--create", "--scripted", "--comments", comment],
+        timeout=1800,
+        check=False,
+    )
+    if code:
+        raise ToolError(error or output or "Timeshift snapshot creation failed.")
+    print(output or "Timeshift finished creating the snapshot.")
+    print("Refresh the list or open Timeshift to verify the new restore point.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("power-status")
+    commands.add_parser("fan-status")
+    power_parser = commands.add_parser("power-set")
+    power_parser.add_argument("mode", choices=sorted(POWER_MODES))
+    install_parser = commands.add_parser("install")
+    install_parser.add_argument("--bundle", action="append", choices=sorted(BUNDLES), required=True)
+    commands.add_parser("fan-start")
+    commands.add_parser("fan-stop")
+    commands.add_parser("fan-configure")
+    commands.add_parser("snapshot-list")
+    snap_create = commands.add_parser("snapshot-create")
+    snap_create.add_argument("comment")
+    args = parser.parse_args()
+
+    read_only = args.command in {"power-status", "fan-status"}
+    try:
+        if not read_only:
+            require_root()
+        if args.command == "power-status":
+            power_status()
+        elif args.command == "fan-status":
+            fan_status()
+        elif args.command == "power-set":
+            set_power(args.mode)
+        elif args.command == "install":
+            package_install(args.bundle)
+        elif args.command == "fan-start":
+            fan_start()
+        elif args.command == "fan-stop":
+            fan_stop()
+        elif args.command == "fan-configure":
+            fan_configure()
+        elif args.command == "snapshot-list":
+            snapshot_list()
+        elif args.command == "snapshot-create":
+            snapshot_create(args.comment)
+        return 0
+    except (ToolError, OSError, ValueError) as exc:
+        print("LunaOS system tools: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
