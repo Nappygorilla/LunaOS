@@ -1,43 +1,61 @@
 #!/usr/bin/env python3
-"""Static safety checks for Control Center features; never run privileged actions."""
+"""Static safety checks; do not invoke pkexec or change system state."""
 import ast
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ui_path = ROOT / "apps/control-center/lunaos-control-center.py"
-tools_path = ROOT / "apps/control-center/lunaos-system-tools"
-profile_path = ROOT / "apps/control-center/lunaos-profile-apply"
-for path in (ui_path, tools_path, profile_path):
+file_map = {
+    "ui": ROOT / "apps/control-center/lunaos-control-center.py",
+    "profile": ROOT / "apps/control-center/lunaos-profile-apply",
+    "tools": ROOT / "apps/control-center/lunaos-system-tools",
+    "agent": ROOT / "apps/control-center/lunaos-update-agent.py",
+    "runner": ROOT / "apps/control-center/lunaos-game-run",
+}
+for path in file_map.values():
     source = path.read_text(encoding="utf-8")
     ast.parse(source, filename=str(path))
     assert "shell=True" not in source and "bash -c" not in source and "os.system(" not in source
 
-tools = tools_path.read_text(encoding="utf-8")
+tools = file_map["tools"].read_text(encoding="utf-8")
 for token in (
     "BUNDLES", "POWER_MODES", "SERVICE_ALLOWLIST", "os.geteuid()", "pacman",
     "timeshift", "pwmconfig", "fancontrol.service", "power-profiles-daemon.service",
-    "snapshot-create", "snapshot-list", "root-equivalent docker group",
+    "snapshot-create", "snapshot-list", "checkupdates", "updates-details", "updates-install",
+    "download-schedule", "reboot-schedule", "SECURITY_CHANGE_RE", "CORE_SYSTEM_RE",
+    "Persistent=false", "lunaos-update-download-state.json",
 ):
-    assert token in tools, "missing expected safety/feature guard: " + token
+    assert token in tools, "missing helper safety/feature token: " + token
 assert "subprocess.run(argv" in tools
 assert re.search(r"pacman.*-Syu.*--needed.*--noconfirm", tools, re.S)
 assert "os.execv(binary, [binary])" in tools
 
-ui = ui_path.read_text(encoding="utf-8")
+ui = file_map["ui"].read_text(encoding="utf-8")
 for token in (
-    "Power modes", "Power saver", "performance", "Cooling and fan control",
-    "Guided fan-curve setup", "System snapshots", "snapshot-create",
-    "Open Timeshift", "Developer tools", "Install selected", "docker group",
-    "pkexec", "Profiles",
+    "Power modes", "Cooling and fan control", "System snapshots", "Developer tools",
+    "System updates", "Install all updates", "Important update compatibility warning",
+    "QProgressBar", "SUPPORT_ISSUES_URL", "notifications_enabled", "download-schedule",
+    "reboot-schedule", "changelog", "schedule_install_at",
 ):
     assert token.lower() in ui.lower(), "missing Control Center feature: " + token
+
+agent = file_map["agent"].read_text(encoding="utf-8")
+for token in (
+    "notifications_enabled", "schedule_install_at", "showMessage",
+    "update-download-state.json", "lunaos-control-center", "--scheduled-install",
+):
+    assert token in agent, "missing update-agent behavior: " + token
 
 policy = ROOT / "packaging/archiso/overlay/airootfs/usr/share/polkit-1/actions/org.lunaos.systemtools.policy"
 policy_text = policy.read_text(encoding="utf-8")
 assert "org.lunaos.systemtools" in policy_text
 assert "/usr/lib/lunaos/lunaos-system-tools" in policy_text
 assert "<allow_any>no</allow_any>" in policy_text
-assert "NOPASSWD: ALL" not in (ROOT / "packaging/archiso/overlay/airootfs/etc/sudoers.d/10-lunaos-live").read_text(encoding="utf-8")
+sudoers = (ROOT / "packaging/archiso/overlay/airootfs/etc/sudoers.d/10-lunaos-live").read_text(encoding="utf-8")
+assert "NOPASSWD: ALL" not in sudoers
 
-print("PASS: Control Center power, fan, snapshots, developer bundles, and privilege smoke checks")
+autostart = ROOT / "packaging/archiso/overlay/airootfs/etc/xdg/autostart/lunaos-update-agent.desktop"
+assert "lunaos-update-agent" in autostart.read_text(encoding="utf-8")
+assert "pacman-contrib" in (ROOT / "config/packages/base.packages").read_text(encoding="utf-8")
+
+print("PASS: Control Center feature, update safety, schedule, and notification smoke checks")
