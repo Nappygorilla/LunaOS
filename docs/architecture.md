@@ -10,8 +10,9 @@ LunaOS separates ISO building, package modules, declarative runtime profiles, an
     KDE desktop
       LunaOS Control Center (PySide6)
         -> ordinary user process with profiles and module switches
-        -> pkexec -> lunaos-profile-apply (root allowlist)
-        -> firewalld, allowlisted sysctl, powerprofilesctl, Firefox policies
+        -> pkexec -> lunaos-profile-apply (profile allowlist)
+        -> pkexec -> lunaos-system-tools (fixed bundles and bounded system actions)
+        -> power profiles, detected fan sensors/configuration, Timeshift, pacman bundles
 
 Build-time modules determine which software is included. Runtime toggles change supported behavior and do not uninstall apps. If a module was excluded at build time, the UI marks its switch unavailable.
 
