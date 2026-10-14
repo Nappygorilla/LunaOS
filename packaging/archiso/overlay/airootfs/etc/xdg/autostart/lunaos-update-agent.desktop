@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LunaOS Update Watcher
+Comment=Check scheduled update downloads and show notifications when enabled
+Exec=/usr/local/bin/lunaos-update-agent
+Icon=system-software-update
+Terminal=false
+OnlyShowIn=KDE;
+X-KDE-autostart-after=panel
