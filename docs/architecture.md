@@ -12,7 +12,10 @@ LunaOS separates ISO building, package modules, declarative runtime profiles, an
         -> ordinary user process with profiles and module switches
         -> pkexec -> lunaos-profile-apply (profile allowlist)
         -> pkexec -> lunaos-system-tools (fixed bundles and bounded system actions)
-        -> power profiles, detected fan sensors/configuration, Timeshift, pacman bundles
+        -> power profiles, detected fan sensors/configuration, Timeshift, pacman bundles, update transactions
+      KDE session update watcher
+        -> reads the user's notification preferences and update-download status
+        -> opens Control Center for scheduled update review, but never silently bypasses critical-update warnings
 
 Build-time modules determine which software is included. Runtime toggles change supported behavior and do not uninstall apps. If a module was excluded at build time, the UI marks its switch unavailable.
 

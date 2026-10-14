@@ -1,6 +1,6 @@
 # Security model
 
-The GUI runs as a normal user and requests elevation through PolicyKit. The helper accepts a known profile ID and four on/off overrides, then reads only packaged profiles from /usr/share/lunaos/profiles.
+The GUI runs as a normal user and requests elevation through PolicyKit. The profile helper accepts a known profile ID and four on/off overrides, then reads only packaged profiles from /usr/share/lunaos/profiles. The separate system-tools helper uses fixed operation names and allowlists for package bundles, update transactions, download scheduling, and reboot scheduling.
 
 Current allowlists:
 - Profile service: firewalld.service.
@@ -14,7 +14,7 @@ All subprocess calls use argument arrays and timeouts. The separate system-tools
 
 Fan control is hardware-dependent. LunaOS only enables fancontrol when an explicit configuration file exists and presents a warning before setup; incorrect PWM configuration can damage hardware. Timeshift snapshot creation requires an initialized snapshot destination. Restore and scheduling remain in the upstream Timeshift manager rather than being run unattended by LunaOS. Docker is not automatically granted to the ordinary user because membership in the docker group is root-equivalent.
 
-The helper records original values in /var/lib/lunaos/control-center-state.json. Its managed sysctl file is /etc/sysctl.d/99-lunaos-profile.conf; if that path exists and is not marked as LunaOS-owned, the helper refuses to overwrite it. This is a development baseline, not a full system backup or a security audit. Add and test transactional rollback before a stable release.
+The profile helper records original values in /var/lib/lunaos/control-center-state.json. The update downloader writes a non-secret summary to /var/lib/lunaos/update-download-state.json; the session watcher only displays desktop notifications when the user setting is enabled. Scheduled background downloads fetch packages but do not install them. Applying updates is a full pacman system-upgrade transaction and the update review flow shows the warning for detected security, OS, driver, core-library, and desktop-foundation changes. Package-provided changelogs are displayed when available; absent notes are not fabricated. Reboot scheduling uses fixed LunaOS-managed systemd unit names and validates the chosen local date/time. The UI asks for explicit consent before activating an automatic reboot timer. Its managed sysctl file is /etc/sysctl.d/99-lunaos-profile.conf; if that path exists and is not marked as LunaOS-owned, the helper refuses to overwrite it. This is a development baseline, not a full system backup or a security audit. Add and test transactional rollback before a stable release.
 
 
 ## Installer and guest account
