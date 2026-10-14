@@ -1,23 +1,42 @@
 #!/usr/bin/env python3
-"""Native LunaOS Control Center; system changes go through the privileged helper."""
+"""LunaOS Control Center: profiles, power, cooling, snapshots, and developer tools."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 import tomllib
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+)
 
 SYSTEM_PROFILES = Path("/usr/share/lunaos/profiles")
 LOCAL_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_PROFILES = LOCAL_ROOT / "config" / "profiles"
 SYSTEM_MANIFEST = Path("/usr/share/lunaos/build-modules.json")
 LOCAL_MANIFEST = LOCAL_ROOT / "config/build-modules.default.json"
-HELPER = Path("/usr/lib/lunaos/lunaos-profile-apply")
+PROFILE_HELPER = Path("/usr/lib/lunaos/lunaos-profile-apply")
+TOOLS_HELPER = Path("/usr/lib/lunaos/lunaos-system-tools")
 USER_STATE = Path.home() / ".config/lunaos/active.json"
 FEATURES = ("security", "privacy", "performance", "gaming")
+
+DEV_BUNDLES = [
+    ("ide-geany", "Geany — lightweight IDE"),
+    ("ide-kdevelop", "KDevelop — C/C++ and language plugins"),
+    ("ide-qtcreator", "Qt Creator — C++ / Qt IDE"),
+    ("ide-gnome-builder", "GNOME Builder — GNOME application IDE"),
+    ("toolchain-python", "Python — interpreter, pip, virtualenv, pytest"),
+    ("toolchain-node", "Node.js and npm"),
+    ("toolchain-rust", "Rust toolchain"),
+    ("toolchain-go", "Go toolchain"),
+    ("toolchain-cpp", "C/C++ — compiler, build tools, CMake, debugger"),
+    ("docker", "Docker Engine + Compose + Buildx"),
+]
 
 
 def read_json(path, fallback):
@@ -27,6 +46,33 @@ def read_json(path, fallback):
         return fallback
 
 
+def run_command(argv, timeout=180, elevated=False):
+    command = list(argv)
+    if elevated:
+        command.insert(0, "pkexec")
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        output = (result.stdout or "").strip()
+        error = (result.stderr or "").strip()
+        return result.returncode, output, error
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, "", str(exc)
+
+
+def tool_action(action, args=(), timeout=240):
+    return run_command([str(TOOLS_HELPER), action, *args], timeout=timeout, elevated=True)
+
+
+def show_result(parent, title, result, success_text=None):
+    code, output, error = result
+    details = output or error or ("Completed successfully." if code == 0 else "The operation failed without further details.")
+    if code == 0:
+        QMessageBox.information(parent, title, success_text or details[-8000:])
+    else:
+        QMessageBox.warning(parent, title, details[-8000:])
+    return code == 0, details
+
+
 def main():
     profile_dir = SYSTEM_PROFILES if SYSTEM_PROFILES.is_dir() else LOCAL_PROFILES
     manifest_path = SYSTEM_MANIFEST if SYSTEM_MANIFEST.is_file() else LOCAL_MANIFEST
@@ -34,138 +80,170 @@ def main():
     included = set(manifest.get("included_modules", ["base", "desktop", *FEATURES, "coding", "creator"]))
     profiles = {}
     for path in sorted(profile_dir.glob("*.toml")):
-        with path.open("rb") as stream:
-            data = tomllib.load(stream)
-        if data.get("profile", {}).get("id") == path.stem:
-            profiles[path.stem] = data
+        try:
+            with path.open("rb") as stream:
+                data = tomllib.load(stream)
+            if data.get("profile", {}).get("id") == path.stem:
+                profiles[path.stem] = data
+        except (OSError, ValueError, tomllib.TOMLDecodeError):
+            continue
     if not profiles:
         raise RuntimeError("No LunaOS profiles found.")
+
     app = QApplication(sys.argv)
     app.setApplicationName("LunaOS Control Center")
     app.setStyleSheet("""
       QWidget { background:#0b1020; color:#edf3ff; font:13px 'Segoe UI'; }
-      QLabel#title { font-size:28px; font-weight:700; }
+      QLabel#title { font-size:27px; font-weight:700; }
       QLabel#sub { color:#a7b8d3; }
-      QListWidget { background:#080d19; border:1px solid #263752; border-radius:12px; min-width:190px; padding:6px; }
-      QListWidget::item { padding:11px; border-radius:8px; }
+      QLabel#section { font-size:17px; font-weight:650; }
+      QTabWidget::pane { border:1px solid #263752; border-radius:10px; top:-1px; }
+      QTabBar::tab { background:#111b30; color:#b8c9e5; padding:12px 18px; margin-right:4px; border-top-left-radius:8px; border-top-right-radius:8px; }
+      QTabBar::tab:selected { background:#1d3d6e; color:#ffffff; }
+      QListWidget, QTextEdit, QLineEdit, QComboBox { background:#080d19; border:1px solid #263752; border-radius:9px; padding:8px; }
+      QListWidget { min-width:190px; }
+      QListWidget::item { padding:10px; border-radius:7px; }
       QListWidget::item:selected { background:#16345d; color:white; }
-      QCheckBox { padding:10px; border:1px solid #283b56; border-radius:9px; }
-      QPushButton { border-radius:9px; padding:12px 18px; font-weight:600; }
-      QPushButton#apply { background:#347fff; color:white; }
+      QCheckBox { padding:8px; border:1px solid #283b56; border-radius:8px; }
+      QPushButton { background:#1c2c45; border:1px solid #2a4161; border-radius:9px; padding:11px 16px; font-weight:600; }
+      QPushButton#primary { background:#347fff; color:white; border-color:#347fff; }
+      QPushButton:disabled { color:#697b96; background:#111827; }
     """)
+
     window = QWidget()
     window.setWindowTitle("LunaOS Control Center")
-    window.resize(1000, 680)
-    outer = QHBoxLayout(window)
+    window.resize(1120, 800)
+    outer = QVBoxLayout(window)
+    heading = QLabel("LunaOS Control Center")
+    heading.setObjectName("title")
+    outer.addWidget(heading)
+    intro = QLabel("Tune your system, protect your work, and add the tools you need.")
+    intro.setObjectName("sub")
+    outer.addWidget(intro)
+    tabs = QTabWidget()
+    outer.addWidget(tabs, 1)
+
+    # Profile presets
+    profile_tab = QWidget()
+    profile_outer = QHBoxLayout(profile_tab)
     listing = QListWidget()
     for ident, data in profiles.items():
         meta = data["profile"]
-        item = QListWidgetItem(f'{meta["name"]}\n{meta.get("category", "Profile")}')
+        item = QListWidgetItem(f'{meta.get("name", ident)}\n{meta.get("category", "Profile")}')
         item.setData(Qt.ItemDataRole.UserRole, ident)
         listing.addItem(item)
-    outer.addWidget(listing)
-    right = QVBoxLayout()
-    title = QLabel("LunaOS Control Center")
-    title.setObjectName("title")
-    right.addWidget(title)
-    status = QLabel("Select a profile, review switches, and apply.")
-    status.setObjectName("sub")
-    right.addWidget(status)
-    description = QLabel()
-    description.setWordWrap(True)
-    description.setMinimumHeight(70)
-    right.addWidget(description)
-    details = {
+    profile_outer.addWidget(listing)
+    profile_panel = QVBoxLayout()
+    profile_status = QLabel("Select a preset, review switches, and apply.")
+    profile_status.setObjectName("sub")
+    profile_panel.addWidget(profile_status)
+    profile_description = QLabel()
+    profile_description.setWordWrap(True)
+    profile_description.setMinimumHeight(66)
+    profile_panel.addWidget(profile_description)
+    descriptions = {
         "security": "Security — firewall and kernel information restrictions",
-        "privacy": "Privacy — managed Firefox telemetry and study opt-outs",
-        "performance": "Performance — power mode and reversible VM tuning",
-        "gaming": "GameMode — enable the lunaos-game-run integration",
+        "privacy": "Privacy — managed Firefox privacy policies",
+        "performance": "Performance — power profile and reversible VM tuning",
+        "gaming": "GameMode — per-user game launch integration",
     }
     switches = {}
     for key in FEATURES:
-        box = QCheckBox(details[key])
+        box = QCheckBox(descriptions[key])
+        box.setEnabled(key in included)
         if key not in included:
-            box.setEnabled(False)
-            box.setToolTip("Excluded from this ISO build. Rebuild with this module included.")
+            box.setToolTip("Not included in this ISO build.")
         switches[key] = box
-        right.addWidget(box)
-    summary = QLabel()
-    summary.setWordWrap(True)
-    summary.setObjectName("sub")
-    right.addWidget(summary)
-    right.addStretch(1)
-    actions = QHBoxLayout()
-    reset = QPushButton("Reset switches to profile")
-    apply = QPushButton("Apply profile")
-    apply.setObjectName("apply")
-    actions.addWidget(reset)
-    actions.addStretch(1)
-    actions.addWidget(apply)
-    right.addLayout(actions)
-    outer.addLayout(right, 1)
-    state = {"profile": "balanced"}
+        profile_panel.addWidget(box)
+    profile_summary = QLabel()
+    profile_summary.setWordWrap(True)
+    profile_summary.setObjectName("sub")
+    profile_panel.addWidget(profile_summary)
+    profile_panel.addStretch(1)
+    profile_actions = QHBoxLayout()
+    profile_reset = QPushButton("Reset switches")
+    profile_apply = QPushButton("Apply profile")
+    profile_apply.setObjectName("primary")
+    profile_actions.addWidget(profile_reset)
+    profile_actions.addStretch(1)
+    profile_actions.addWidget(profile_apply)
+    profile_panel.addLayout(profile_actions)
+    profile_outer.addLayout(profile_panel, 1)
+    profile_state = {"profile": "balanced"}
 
-    def selected_id():
+    def selected_profile():
         item = listing.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item else state["profile"]
+        return item.data(Qt.ItemDataRole.UserRole) if item else profile_state["profile"]
 
     def select_profile(item=None):
-        ident = item.data(Qt.ItemDataRole.UserRole) if item is not None else selected_id()
-        state["profile"] = ident
+        ident = item.data(Qt.ItemDataRole.UserRole) if item is not None else selected_profile()
+        if ident not in profiles:
+            ident = next(iter(profiles))
+        profile_state["profile"] = ident
         data = profiles[ident]
-        description.setText(data["profile"].get("description", ""))
+        profile_description.setText(data["profile"].get("description", ""))
         for key, box in switches.items():
             built = key in included
             box.blockSignals(True)
             box.setEnabled(built)
             box.setChecked(built and bool(data.get("modules", {}).get(key, False)))
             box.blockSignals(False)
-        enabled = [key.title() for key, value in data.get("modules", {}).items() if value and (key not in FEATURES or key in included)]
-        missing = sorted(key for key in ("security", "privacy", "performance", "gaming", "coding", "creator") if key not in included)
-        suffix = ("; not built: " + ", ".join(missing)) if missing else ""
-        summary.setText("Profile includes: " + (", ".join(enabled) or "no optional modules") + suffix)
-        status.setText("Selected preset · " + data["profile"].get("category", "Profile"))
+        enabled = [key.title() for key, value in data.get("modules", {}).items()
+                   if value and (key not in FEATURES or key in included)]
+        missing = sorted(key for key in ("security", "privacy", "performance", "gaming", "coding", "creator")
+                         if key not in included)
+        suffix = (" · not in this build: " + ", ".join(missing)) if missing else ""
+        profile_summary.setText("Preset modules: " + (", ".join(enabled) or "no optional modules") + suffix)
+        profile_status.setText("Preset selected · " + data["profile"].get("category", "Profile"))
 
     def apply_profile():
-        ident = selected_id()
-        module_flags = {key: (box.isChecked() if key in included else False) for key, box in switches.items()}
-        if not module_flags["security"]:
-            reply = QMessageBox.warning(window, "Disable security?", "This stops and disables the firewall. Continue only if you understand the risk.", QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.Cancel)
+        ident = selected_profile()
+        flags = {key: (box.isChecked() if key in included else False) for key, box in switches.items()}
+        if not flags["security"]:
+            reply = QMessageBox.warning(
+                window, "Disable security?",
+                "This stops and disables the firewall. Continue only if you understand the risk.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+                QMessageBox.StandardButton.Cancel
+            )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-        reply = QMessageBox.question(window, "Apply LunaOS profile", "Apply this profile and selected switches? Administrator authentication may be required.", QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Apply, QMessageBox.StandardButton.Apply)
+        reply = QMessageBox.question(
+            window, "Apply LunaOS profile",
+            "Apply this preset and its selected switches? Administrator authentication may be required.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Apply,
+            QMessageBox.StandardButton.Apply
+        )
         if reply != QMessageBox.StandardButton.Apply:
             return
-        args = ["pkexec", str(HELPER), ident]
-        args.extend("--" + key + "=" + ("on" if value else "off") for key, value in module_flags.items())
-        apply.setEnabled(False)
-        status.setText("Applying changes…")
+        args = ["pkexec", str(PROFILE_HELPER), ident]
+        args.extend("--" + key + "=" + ("on" if value else "off") for key, value in flags.items())
+        profile_apply.setEnabled(False)
+        profile_status.setText("Applying changes…")
         app.processEvents()
-        try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            QMessageBox.critical(window, "Could not apply profile", str(exc))
-            status.setText("Apply failed")
-            apply.setEnabled(True)
-            return
-        apply.setEnabled(True)
-        if result.returncode:
-            QMessageBox.critical(window, "Profile not applied", (result.stderr or result.stdout or "Helper failed").strip()[-2000:])
-            status.setText("Apply failed")
+        code, output, error = run_command(args, timeout=180)
+        profile_apply.setEnabled(True)
+        if code:
+            profile_status.setText("Apply failed")
+            QMessageBox.warning(window, "Profile not applied", (error or output or "Helper failed")[-8000:])
             return
         USER_STATE.parent.mkdir(parents=True, exist_ok=True)
-        user_state = {"profile": ident, "modules": dict(profiles[ident].get("modules", {})), "settings": profiles[ident].get("settings", {})}
-        user_state["modules"].update(module_flags)
+        saved = {
+            "profile": ident,
+            "modules": dict(profiles[ident].get("modules", {})),
+            "settings": profiles[ident].get("settings", {}),
+        }
+        saved["modules"].update(flags)
         temporary = USER_STATE.with_suffix(".tmp")
-        temporary.write_text(json.dumps(user_state, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
         os.chmod(temporary, 0o600)
         temporary.replace(USER_STATE)
-        status.setText("Profile applied successfully")
-        QMessageBox.information(window, "LunaOS configured", (result.stdout or "Profile applied.").strip())
+        profile_status.setText("Profile applied successfully")
+        QMessageBox.information(window, "LunaOS configured", (output or "Profile applied.")[-8000:])
 
     listing.currentItemChanged.connect(lambda item, _old: select_profile(item) if item else None)
-    reset.clicked.connect(lambda: select_profile())
-    apply.clicked.connect(apply_profile)
+    profile_reset.clicked.connect(lambda: select_profile())
+    profile_apply.clicked.connect(apply_profile)
     preferred = read_json(USER_STATE, {}).get("profile")
     if not preferred:
         preferred = read_json(Path.home() / ".config/lunaos/preferences.json", {}).get("preferred_profile")
@@ -174,12 +252,368 @@ def main():
             preferred = Path("/etc/lunaos/default-profile").read_text(encoding="utf-8").strip()
         except OSError:
             preferred = None
-    start_row = 0
-    for index in range(listing.count()):
-        if listing.item(index).data(Qt.ItemDataRole.UserRole) == preferred:
-            start_row = index
-            break
-    listing.setCurrentRow(start_row)
+    row = next((i for i in range(listing.count())
+                if listing.item(i).data(Qt.ItemDataRole.UserRole) == preferred), 0)
+    listing.setCurrentRow(row)
+    tabs.addTab(profile_tab, "Profiles")
+
+    # Power profiles
+    power_tab = QWidget()
+    power_layout = QVBoxLayout(power_tab)
+    power_title = QLabel("Power modes")
+    power_title.setObjectName("section")
+    power_layout.addWidget(power_title)
+    power_layout.addWidget(QLabel("Switch between performance, balanced, and power-saving modes. Actual modes depend on your hardware and firmware."))
+    power_form = QFormLayout()
+    power_combo = QComboBox()
+    for label, value in (
+        ("Power saver · longer battery life", "power-saver"),
+        ("Balanced · everyday use", "balanced"),
+        ("Performance · prioritize responsiveness", "performance"),
+    ):
+        power_combo.addItem(label, value)
+    power_form.addRow("Preferred mode", power_combo)
+    power_layout.addLayout(power_form)
+    power_status = QLabel("Checking power-profile support…")
+    power_status.setWordWrap(True)
+    power_status.setObjectName("sub")
+    power_layout.addWidget(power_status)
+    power_actions = QHBoxLayout()
+    power_refresh = QPushButton("Refresh status")
+    power_install = QPushButton("Install power + sensor support")
+    power_apply = QPushButton("Apply power mode")
+    power_apply.setObjectName("primary")
+    power_actions.addWidget(power_refresh)
+    power_actions.addWidget(power_install)
+    power_actions.addStretch(1)
+    power_actions.addWidget(power_apply)
+    power_layout.addLayout(power_actions)
+    power_layout.addStretch(1)
+
+    def refresh_power():
+        code, output, error = run_command([str(TOOLS_HELPER), "power-status"])
+        if code:
+            power_status.setText("Power profile status unavailable: " + (error or output))
+            return
+        try:
+            info = json.loads(output)
+        except ValueError:
+            power_status.setText(output or "Power profile status unavailable.")
+            return
+        if not info.get("installed"):
+            power_status.setText("Power profile support is not installed. Install it to enable these modes.")
+            return
+        active = info.get("active") or "unknown"
+        available = info.get("available", [])
+        power_status.setText(
+            "Current mode: " + active + "\nAvailable on this machine: " +
+            (", ".join(available) if available else "daemon is unavailable or no modes were reported") +
+            "\nPerformance mode may be absent on some laptops. LunaOS will not fake a mode your hardware does not expose."
+        )
+        index = power_combo.findData(active)
+        if index >= 0:
+            power_combo.setCurrentIndex(index)
+
+    def set_power():
+        mode = power_combo.currentData()
+        okay, details = show_result(window, "Power mode", tool_action("power-set", [str(mode)], timeout=90))
+        power_status.setText(details[-4000:])
+        refresh_power()
+
+    def install_power():
+        okay, details = show_result(
+            window, "Power and sensor support",
+            tool_action("install", ["--bundle", "power"], timeout=1800),
+            "Power profile and hardware sensor components installed."
+        )
+        power_status.setText(details[-4000:])
+        refresh_power()
+
+    power_refresh.clicked.connect(refresh_power)
+    power_install.clicked.connect(install_power)
+    power_apply.clicked.connect(set_power)
+    tabs.addTab(power_tab, "Power")
+
+    # Cooling / fan controller
+    fan_tab = QWidget()
+    fan_layout = QVBoxLayout(fan_tab)
+    fan_title = QLabel("Cooling and fan control")
+    fan_title.setObjectName("section")
+    fan_layout.addWidget(fan_title)
+    fan_layout.addWidget(QLabel(
+        "LunaOS detects sensors and provides a guided fan-curve setup where the hardware supports it. "
+        "Many laptops and some desktops only expose fan control through firmware."
+    ))
+    fan_warning = QLabel(
+        "Safety: incorrect PWM settings can overheat or damage hardware. Keep firmware/automatic cooling enabled "
+        "unless the fan controller is detected and you understand the prompts."
+    )
+    fan_warning.setWordWrap(True)
+    fan_warning.setObjectName("sub")
+    fan_layout.addWidget(fan_warning)
+    fan_status = QLabel("Reading temperatures and fan-control support…")
+    fan_status.setWordWrap(True)
+    fan_layout.addWidget(fan_status)
+    fan_readings = QTextEdit()
+    fan_readings.setReadOnly(True)
+    fan_readings.setPlaceholderText("Temperature and fan RPM readings will appear here.")
+    fan_layout.addWidget(fan_readings, 1)
+    fan_actions = QHBoxLayout()
+    fan_refresh = QPushButton("Refresh readings")
+    fan_install = QPushButton("Install sensor support")
+    fan_configure = QPushButton("Guided fan-curve setup")
+    fan_start = QPushButton("Use configured fan curve")
+    fan_stop = QPushButton("Return to firmware / automatic cooling")
+    fan_actions.addWidget(fan_refresh)
+    fan_actions.addWidget(fan_install)
+    fan_actions.addWidget(fan_configure)
+    fan_actions.addWidget(fan_start)
+    fan_actions.addWidget(fan_stop)
+    fan_layout.addLayout(fan_actions)
+
+    def refresh_fans():
+        code, output, error = run_command([str(TOOLS_HELPER), "fan-status"])
+        if code:
+            fan_status.setText("Fan status unavailable: " + (error or output))
+            return
+        try:
+            info = json.loads(output)
+        except ValueError:
+            fan_status.setText(output or "Fan status unavailable.")
+            return
+        fan_status.setText(
+            "lm_sensors: " + ("available" if info.get("sensors_installed") else "not installed") +
+            " · PWM outputs detected: " + ("yes" if info.get("pwm_detected") else "no") +
+            " · fancontrol config: " + ("ready" if info.get("configured") else "not configured") +
+            " · fancontrol service: " + ("active" if info.get("active") else "inactive")
+        )
+        readings = info.get("readings") or "No sensor output is available on this machine."
+        fan_readings.setPlainText(readings)
+
+    def install_sensors():
+        okay, details = show_result(
+            window, "Sensor support",
+            tool_action("install", ["--bundle", "power"], timeout=1800),
+            "Sensor and power-profile packages installed."
+        )
+        fan_readings.setPlainText(details[-8000:])
+        refresh_fans()
+
+    def configure_fans():
+        if not shutil.which("konsole"):
+            QMessageBox.warning(window, "Terminal not found", "Konsole is required for the guided fan-curve setup.")
+            return
+        reply = QMessageBox.warning(
+            window, "Before configuring fans",
+            "This opens lm_sensors pwmconfig. Follow its prompts carefully, do not guess at fan mappings, "
+            "and stop if your CPU/GPU cooling behavior is unclear. Hardware may not support software control. Continue?",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            subprocess.Popen(["konsole", "-e", "pkexec", str(TOOLS_HELPER), "fan-configure"])
+        except OSError as exc:
+            QMessageBox.warning(window, "Could not open guided setup", str(exc))
+
+    def start_fans():
+        reply = QMessageBox.warning(
+            window, "Enable software fan control?",
+            "This activates the fancontrol service using /etc/fancontrol. Do this only after completing the guided "
+            "configuration and confirming that the detected sensors and fans are correct.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        okay, details = show_result(window, "Fan control", tool_action("fan-start", timeout=90))
+        fan_status.setText(details[-3000:])
+        refresh_fans()
+
+    def stop_fans():
+        okay, details = show_result(
+            window, "Fan control",
+            tool_action("fan-stop", timeout=90),
+            "Software fancontrol was stopped. Firmware control should resume where supported."
+        )
+        fan_status.setText(details[-3000:])
+        refresh_fans()
+
+    fan_refresh.clicked.connect(refresh_fans)
+    fan_install.clicked.connect(install_sensors)
+    fan_configure.clicked.connect(configure_fans)
+    fan_start.clicked.connect(start_fans)
+    fan_stop.clicked.connect(stop_fans)
+    tabs.addTab(fan_tab, "Cooling")
+
+    # Snapshots
+    snapshot_tab = QWidget()
+    snapshot_layout = QVBoxLayout(snapshot_tab)
+    snapshot_title = QLabel("System snapshots")
+    snapshot_title.setObjectName("section")
+    snapshot_layout.addWidget(snapshot_title)
+    snapshot_layout.addWidget(QLabel(
+        "Timeshift can create restore points before risky updates, and its full manager handles schedules and restores. "
+        "A usable backup destination and compatible filesystem layout are still required."
+    ))
+    snapshot_layout.addWidget(QLabel(
+        "Creating a snapshot does not replace a separate backup of personal files. Restore can revert system changes "
+        "and may require a reboot, so review the selected snapshot in Timeshift before restoring."
+    ))
+    snapshot_form = QFormLayout()
+    snapshot_comment = QLineEdit("LunaOS restore point")
+    snapshot_comment.setMaxLength(80)
+    snapshot_form.addRow("Snapshot description", snapshot_comment)
+    snapshot_layout.addLayout(snapshot_form)
+    snapshot_output = QTextEdit()
+    snapshot_output.setReadOnly(True)
+    snapshot_output.setPlaceholderText("Click Refresh to list snapshots, or create a restore point.")
+    snapshot_layout.addWidget(snapshot_output, 1)
+    snapshot_actions = QHBoxLayout()
+    snapshot_refresh = QPushButton("Refresh snapshots")
+    snapshot_install = QPushButton("Install Timeshift")
+    snapshot_create = QPushButton("Create snapshot")
+    snapshot_create.setObjectName("primary")
+    snapshot_open = QPushButton("Open Timeshift · schedule / restore")
+    snapshot_actions.addWidget(snapshot_refresh)
+    snapshot_actions.addWidget(snapshot_install)
+    snapshot_actions.addWidget(snapshot_create)
+    snapshot_actions.addWidget(snapshot_open)
+    snapshot_layout.addLayout(snapshot_actions)
+
+    def refresh_snapshots():
+        okay, details = show_result(
+            window, "Snapshot list", tool_action("snapshot-list", timeout=180),
+            "Snapshot list refreshed."
+        )
+        snapshot_output.setPlainText(details[-12000:])
+
+    def install_timeshift():
+        okay, details = show_result(
+            window, "Install Timeshift",
+            tool_action("install", ["--bundle", "snapshots"], timeout=1800),
+            "Timeshift and its scheduling service have been installed."
+        )
+        snapshot_output.setPlainText(details[-10000:])
+
+    def create_snapshot():
+        comment = snapshot_comment.text().strip()
+        if not comment:
+            QMessageBox.warning(window, "Description required", "Enter a short description for the snapshot.")
+            return
+        reply = QMessageBox.question(
+            window, "Create system snapshot",
+            "Create a Timeshift snapshot now? This can use significant disk space and may take a while.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        okay, details = show_result(
+            window, "Create snapshot",
+            tool_action("snapshot-create", [comment], timeout=1800)
+        )
+        snapshot_output.setPlainText(details[-12000:])
+
+    def open_timeshift():
+        if not shutil.which("timeshift-gtk"):
+            QMessageBox.warning(window, "Timeshift not installed", "Use Install Timeshift first.")
+            return
+        try:
+            subprocess.Popen(["timeshift-gtk"])
+        except OSError as exc:
+            QMessageBox.warning(window, "Could not open Timeshift", str(exc))
+
+    snapshot_refresh.clicked.connect(refresh_snapshots)
+    snapshot_install.clicked.connect(install_timeshift)
+    snapshot_create.clicked.connect(create_snapshot)
+    snapshot_open.clicked.connect(open_timeshift)
+    tabs.addTab(snapshot_tab, "Snapshots")
+
+    # Developer tools
+    dev_tab = QWidget()
+    dev_layout = QVBoxLayout(dev_tab)
+    dev_title = QLabel("Developer tools")
+    dev_title.setObjectName("section")
+    dev_layout.addWidget(dev_title)
+    dev_layout.addWidget(QLabel(
+        "Choose the IDEs, language toolchains, and container tools you need. LunaOS installs only from the official "
+        "Arch repositories here; it does not run arbitrary install scripts or install AUR packages for you."
+    ))
+    dev_scroll = QScrollArea()
+    dev_scroll.setWidgetResizable(True)
+    dev_items = QWidget()
+    dev_items_layout = QVBoxLayout(dev_items)
+    dev_checks = {}
+    for key, label in DEV_BUNDLES:
+        checkbox = QCheckBox(label)
+        checkbox.setProperty("bundle", key)
+        dev_checks[key] = checkbox
+        dev_items_layout.addWidget(checkbox)
+    dev_items_layout.addStretch(1)
+    dev_scroll.setWidget(dev_items)
+    dev_layout.addWidget(dev_scroll, 1)
+    docker_note = QLabel(
+        "Docker note: the service can be enabled without granting ordinary users root-equivalent Docker-group access. "
+        "LunaOS does not add your account to the docker group automatically."
+    )
+    docker_note.setWordWrap(True)
+    docker_note.setObjectName("sub")
+    dev_layout.addWidget(docker_note)
+    dev_actions = QHBoxLayout()
+    dev_select_all = QPushButton("Select all")
+    dev_clear = QPushButton("Clear")
+    dev_install = QPushButton("Install selected")
+    dev_install.setObjectName("primary")
+    dev_actions.addWidget(dev_select_all)
+    dev_actions.addWidget(dev_clear)
+    dev_actions.addStretch(1)
+    dev_actions.addWidget(dev_install)
+    dev_layout.addLayout(dev_actions)
+    dev_output = QTextEdit()
+    dev_output.setReadOnly(True)
+    dev_output.setMaximumHeight(120)
+    dev_output.setPlaceholderText("Installation results will appear here.")
+    dev_layout.addWidget(dev_output)
+
+    def install_selected():
+        selected = [key for key, checkbox in dev_checks.items() if checkbox.isChecked()]
+        if not selected:
+            QMessageBox.information(window, "No tools selected", "Select at least one IDE, toolchain, or Docker.")
+            return
+        explanation = "Install the selected tools using pacman. Arch requires a full system upgrade alongside installs. "
+        if "docker" in selected:
+            explanation += "The Docker service will be enabled, but your user will NOT be added to the root-equivalent docker group. "
+        explanation += "This may download large packages. Continue?"
+        reply = QMessageBox.question(
+            window, "Install developer tools", explanation,
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        args = []
+        for key in selected:
+            args.extend(["--bundle", key])
+        dev_install.setEnabled(False)
+        dev_output.setPlainText("Installing selected packages and applying required service setup…\nThis may take several minutes.")
+        app.processEvents()
+        result = tool_action("install", args, timeout=2400)
+        dev_install.setEnabled(True)
+        code, output, error = result
+        details = output or error or ("Installation completed." if code == 0 else "No details were returned.")
+        dev_output.setPlainText(details[-16000:])
+        if code == 0:
+            QMessageBox.information(window, "Developer tools ready", "Package installation finished.\n\n" + details[-4000:])
+        else:
+            QMessageBox.warning(window, "Installation did not finish", details[-5000:])
+
+    dev_select_all.clicked.connect(lambda: [item.setChecked(True) for item in dev_checks.values()])
+    dev_clear.clicked.connect(lambda: [item.setChecked(False) for item in dev_checks.values()])
+    dev_install.clicked.connect(install_selected)
+    tabs.addTab(dev_tab, "Developer tools")
+
     window.show()
     return app.exec()
 

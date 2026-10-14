@@ -57,6 +57,17 @@ Check boot, SDDM, KDE Plasma, networking, sound, Control Center, profile switchi
 
 These settings are not guaranteed FPS increases. Kernel command-line changes are not silently applied; future boot-parameter changes must preview exact edits and require explicit reboot confirmation.
 
+## Control Center tools
+
+The Control Center also includes dedicated **Power**, **Cooling**, **Snapshots**, and **Developer tools** tabs:
+
+- **Power:** choose power-saver, balanced, or performance where the hardware and power-profiles-daemon support it.
+- **Cooling:** inspect lm_sensors readings, run the guided pwmconfig setup where supported, and enable/stop a configured fancontrol service. Hardware fan control is not available on every machine; default firmware cooling remains the fallback.
+- **Snapshots:** install Timeshift, create and list restore points, or open its full manager to set schedules and review restores. Snapshot setup needs a compatible destination and filesystem layout.
+- **Developer tools:** install Geany, KDevelop, Qt Creator, GNOME Builder, language toolchains, or Docker/Compose/Buildx from fixed official Arch package bundles. Package installation also performs the system upgrade required by Arch package management.
+
+Docker is not silently granted root-equivalent group access. Software fan control, snapshot creation, and system package installation require administrator authentication. The ISO and hardware behavior still need VM and real-device testing before stable release.
+
 ## Development checks
 
     bash scripts/check-project.sh
