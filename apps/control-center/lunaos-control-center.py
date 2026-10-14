@@ -5,7 +5,9 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import tarfile
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 import tomllib
 
 from PySide6.QtCore import Qt, QDateTime, QTime, QProcess, QTimer, QEvent, QObject
@@ -14,7 +16,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateTimeEdit, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QProgressBar, QScrollArea, QTabWidget, QTextEdit, QTimeEdit, QVBoxLayout, QWidget
+    QFileDialog, QProgressBar, QScrollArea, QTabWidget, QTextEdit, QTimeEdit, QVBoxLayout, QWidget
 )
 
 SYSTEM_PROFILES = Path("/usr/share/lunaos/profiles")
@@ -536,6 +538,194 @@ def main():
     snapshot_open.clicked.connect(open_timeshift)
     tabs.addTab(snapshot_tab, "Snapshots")
 
+    # Personal file backup is intentionally separate from Timeshift system snapshots.
+    backup_title = QLabel("Personal file backups")
+    backup_title.setObjectName("section")
+    snapshot_layout.addWidget(backup_title)
+    snapshot_layout.addWidget(QLabel(
+        "Create a portable archive of folders you choose. This does not require administrator access and is separate from Timeshift. "
+        "Restore always extracts into a new folder; it never overwrites your existing personal files."
+    ))
+    backup_sources_list = QListWidget()
+    backup_sources_list.setMaximumHeight(110)
+    backup_sources_list.setToolTip("Folders included in the next personal backup.")
+    snapshot_layout.addWidget(backup_sources_list)
+    backup_status = QLabel("Choose one or more folders to back up.")
+    backup_status.setWordWrap(True)
+    backup_status.setObjectName("sub")
+    snapshot_layout.addWidget(backup_status)
+    backup_progress = QProgressBar()
+    backup_progress.setRange(0, 100)
+    backup_progress.setValue(0)
+    backup_progress.setFormat("Idle")
+    snapshot_layout.addWidget(backup_progress)
+    backup_actions = QHBoxLayout()
+    backup_add = QPushButton("Add folder")
+    backup_remove = QPushButton("Remove selected")
+    backup_create = QPushButton("Create personal backup")
+    backup_create.setObjectName("primary")
+    backup_restore = QPushButton("Restore backup into new folder")
+    backup_actions.addWidget(backup_add)
+    backup_actions.addWidget(backup_remove)
+    backup_actions.addWidget(backup_create)
+    backup_actions.addWidget(backup_restore)
+    snapshot_layout.addLayout(backup_actions)
+    backup_sources = []
+
+    def add_backup_source():
+        folder = QFileDialog.getExistingDirectory(window, "Choose a folder to back up", str(Path.home()))
+        if not folder:
+            return
+        selected = Path(folder).expanduser().resolve()
+        if not selected.is_dir():
+            QMessageBox.warning(window, "Invalid backup folder", "Choose an existing folder.")
+            return
+        if selected in backup_sources:
+            return
+        backup_sources.append(selected)
+        backup_sources_list.addItem(str(selected))
+        backup_status.setText(f"{len(backup_sources)} folder(s) selected.")
+
+    def remove_backup_source():
+        row = backup_sources_list.currentRow()
+        if row < 0:
+            return
+        backup_sources_list.takeItem(row)
+        backup_sources.pop(row)
+        backup_status.setText(f"{len(backup_sources)} folder(s) selected.")
+
+    def create_personal_backup():
+        if not backup_sources:
+            QMessageBox.information(window, "Choose folders", "Add at least one folder before creating a backup.")
+            return
+        suggested = Path.home() / f"LunaOS-personal-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.gz"
+        filename, _ = QFileDialog.getSaveFileName(
+            window, "Save personal backup", str(suggested), "Compressed backup (*.tar.gz)"
+        )
+        if not filename:
+            return
+        archive_path = Path(filename).expanduser().resolve()
+        if not archive_path.name.endswith(".tar.gz"):
+            archive_path = archive_path.with_name(archive_path.name + ".tar.gz")
+        for source in backup_sources:
+            if archive_path == source or source in archive_path.parents:
+                QMessageBox.warning(window, "Backup destination is inside a source", "Save the backup outside every selected source folder to prevent the archive from including itself.")
+                return
+        reply = QMessageBox.question(
+            window, "Create personal backup",
+            f"Archive {len(backup_sources)} selected folder(s) to:\n{archive_path}\n\nThis may take time and use substantial disk space.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        excluded_parts = {".cache", ".git", "node_modules", "__pycache__", ".Trash-1000"}
+        def safe_backup_member(info):
+            parts = PurePosixPath(info.name).parts
+            if any(part in excluded_parts for part in parts) or ".local/share/Trash" in info.name:
+                return None
+            if info.issym() or info.islnk() or not (info.isfile() or info.isdir()):
+                return None
+            return info
+
+        backup_create.setEnabled(False)
+        backup_progress.setRange(0, 0)
+        backup_progress.setFormat("Creating archive…")
+        backup_status.setText("Creating a personal backup. Keep LunaOS open until it finishes.")
+        app.processEvents()
+        try:
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for source in backup_sources:
+                    archive.add(source, arcname=source.name, recursive=True, filter=safe_backup_member)
+            backup_progress.setRange(0, 100)
+            backup_progress.setValue(100)
+            backup_progress.setFormat("Complete")
+            backup_status.setText(f"Backup created: {archive_path} ({archive_path.stat().st_size:,} bytes).")
+            QMessageBox.information(window, "Personal backup created", f"Your archive is saved at:\n{archive_path}")
+        except (OSError, tarfile.TarError, ValueError) as exc:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            backup_progress.setRange(0, 100)
+            backup_progress.setValue(0)
+            backup_progress.setFormat("Failed")
+            backup_status.setText("Backup failed: " + str(exc))
+            QMessageBox.warning(window, "Personal backup failed", str(exc))
+        finally:
+            backup_create.setEnabled(True)
+
+    def restore_personal_backup():
+        filename, _ = QFileDialog.getOpenFileName(window, "Choose a LunaOS personal backup", str(Path.home()), "Compressed backup (*.tar.gz *.tgz)")
+        if not filename:
+            return
+        archive_path = Path(filename)
+        destination = QFileDialog.getExistingDirectory(window, "Choose where to restore the backup", str(Path.home()))
+        if not destination:
+            return
+        destination_path = Path(destination).expanduser().resolve()
+        reply = QMessageBox.question(
+            window, "Restore personal backup",
+            "LunaOS will create a new timestamped folder inside the selected destination. Existing files will not be overwritten. Continue?",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        restore_root = destination_path / ("LunaOS-Restored-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+        suffix = 1
+        while restore_root.exists():
+            restore_root = destination_path / ("LunaOS-Restored-" + datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{suffix}")
+            suffix += 1
+        backup_restore.setEnabled(False)
+        backup_progress.setRange(0, 0)
+        backup_progress.setFormat("Restoring…")
+        backup_status.setText("Validating archive contents before restoring.")
+        app.processEvents()
+        try:
+            with tarfile.open(archive_path, "r:gz") as archive:
+                members = archive.getmembers()
+                for member in members:
+                    parts = PurePosixPath(member.name).parts
+                    if not parts or PurePosixPath(member.name).is_absolute() or ".." in parts:
+                        raise ValueError("The archive contains an unsafe path and was rejected.")
+                    if not (member.isdir() or member.isfile()):
+                        raise ValueError("The archive contains a link or special file; it was rejected for safety.")
+                restore_root.mkdir(parents=True, exist_ok=False)
+                for member in members:
+                    parts = PurePosixPath(member.name).parts
+                    target = restore_root.joinpath(*parts)
+                    target.relative_to(restore_root)
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source_file = archive.extractfile(member)
+                    if source_file is None:
+                        raise ValueError("A file in the archive could not be read.")
+                    with source_file, target.open("xb") as target_file:
+                        shutil.copyfileobj(source_file, target_file)
+            backup_progress.setRange(0, 100)
+            backup_progress.setValue(100)
+            backup_progress.setFormat("Complete")
+            backup_status.setText(f"Restored into {restore_root}")
+            QMessageBox.information(window, "Backup restored", f"Files were restored into a new folder:\n{restore_root}\n\nReview the contents and move files manually as needed.")
+        except (OSError, tarfile.TarError, ValueError) as exc:
+            backup_progress.setRange(0, 100)
+            backup_progress.setValue(0)
+            backup_progress.setFormat("Failed")
+            backup_status.setText("Restore failed: " + str(exc))
+            QMessageBox.warning(window, "Backup restore failed", str(exc))
+        finally:
+            backup_restore.setEnabled(True)
+
+    backup_add.clicked.connect(add_backup_source)
+    backup_remove.clicked.connect(remove_backup_source)
+    backup_create.clicked.connect(create_personal_backup)
+    backup_restore.clicked.connect(restore_personal_backup)
+
     # Developer tools
     dev_tab = QWidget()
     dev_layout = QVBoxLayout(dev_tab)
@@ -566,6 +756,68 @@ def main():
     docker_note.setWordWrap(True)
     docker_note.setObjectName("sub")
     dev_layout.addWidget(docker_note)
+
+    # Quick launcher for installed developer tools and project folders.
+    launcher_title = QLabel("Quick launch")
+    launcher_title.setObjectName("section")
+    dev_layout.addWidget(launcher_title)
+    launcher_status = QLabel("Launch an installed IDE directly, or open a project folder with your selected IDE.")
+    launcher_status.setWordWrap(True)
+    launcher_status.setObjectName("sub")
+    dev_layout.addWidget(launcher_status)
+    launcher_row = QHBoxLayout()
+    ide_launchers = [
+        ("Geany", "geany"),
+        ("KDevelop", "kdevelop"),
+        ("Qt Creator", "qtcreator"),
+        ("GNOME Builder", "gnome-builder"),
+        ("Kate", "kate"),
+    ]
+    for label, executable in ide_launchers:
+        button = QPushButton(label)
+        button.setEnabled(shutil.which(executable) is not None)
+        button.setToolTip(f"Launch {executable}" if button.isEnabled() else f"{executable} is not installed")
+        def launch_ide(_checked=False, command=executable, name=label):
+            binary = shutil.which(command)
+            if not binary:
+                QMessageBox.information(window, "IDE not installed", f"{name} is not installed yet. Select it in the catalog below.")
+                return
+            try:
+                subprocess.Popen([binary], start_new_session=True)
+                launcher_status.setText(f"Launched {name}.")
+            except OSError as exc:
+                QMessageBox.warning(window, "Could not launch IDE", str(exc))
+        button.clicked.connect(launch_ide)
+        launcher_row.addWidget(button)
+    dev_layout.addLayout(launcher_row)
+    project_row = QHBoxLayout()
+    project_ide = QComboBox()
+    for label, executable in ide_launchers:
+        if shutil.which(executable):
+            project_ide.addItem(label, executable)
+    if project_ide.count() == 0:
+        project_ide.addItem("No supported IDE installed", "")
+    project_open = QPushButton("Open project folder")
+    project_open.setEnabled(bool(project_ide.currentData()))
+    project_ide.currentIndexChanged.connect(lambda _index: project_open.setEnabled(bool(project_ide.currentData())))
+    def open_project_folder():
+        command = project_ide.currentData()
+        folder = QFileDialog.getExistingDirectory(window, "Choose project folder", str(Path.home()))
+        if not folder or not command:
+            return
+        binary = shutil.which(command)
+        if not binary:
+            QMessageBox.warning(window, "IDE unavailable", f"{command} is no longer available.")
+            return
+        try:
+            subprocess.Popen([binary, str(Path(folder).resolve())], start_new_session=True)
+            launcher_status.setText(f"Opened project folder in {project_ide.currentText()}.")
+        except OSError as exc:
+            QMessageBox.warning(window, "Could not open project", str(exc))
+    project_open.clicked.connect(open_project_folder)
+    project_row.addWidget(project_ide, 1)
+    project_row.addWidget(project_open)
+    dev_layout.addLayout(project_row)
     dev_actions = QHBoxLayout()
     dev_select_all = QPushButton("Select all")
     dev_clear = QPushButton("Clear")
@@ -1122,6 +1374,40 @@ def main():
     schedule_cancel_reboot_btn.clicked.connect(cancel_reboot_schedule)
     tabs.addTab(updates_tab, "Updates")
 
+
+
+    # Unified landing dashboard with shortcuts into the existing feature tabs.
+    overview_tab = QWidget()
+    overview_layout = QVBoxLayout(overview_tab)
+    overview_title = QLabel("Welcome to LunaOS")
+    overview_title.setObjectName("title")
+    overview_layout.addWidget(overview_title)
+    overview_layout.addWidget(QLabel(
+        "Your system controls in one place. Choose a task below; hardware-specific options are shown only when supported."
+    ))
+    overview_grid = QFormLayout()
+    overview_actions = [
+        ("Power & performance", power_tab),
+        ("Cooling & fan status", fan_tab),
+        ("System snapshots & personal backups", snapshot_tab),
+        ("Developer Hub", dev_tab),
+        ("System updates", updates_tab),
+        ("Profiles & privacy", profile_tab),
+    ]
+    for label, target_tab in overview_actions:
+        button = QPushButton("Open " + label)
+        button.clicked.connect(lambda _checked=False, target=target_tab: tabs.setCurrentWidget(target))
+        overview_grid.addRow(label, button)
+    overview_layout.addLayout(overview_grid)
+    overview_layout.addStretch(1)
+    overview_note = QLabel(
+        "Backup tip: Timeshift protects system state; Personal file backups are separate archives of folders you choose. "
+        "For important files, keep a copy on a separate drive or trusted storage location."
+    )
+    overview_note.setWordWrap(True)
+    overview_note.setObjectName("sub")
+    overview_layout.addWidget(overview_note)
+    tabs.insertTab(0, overview_tab, "Overview")
 
     window.show()
     if "--updates" in APP_ARGS:
