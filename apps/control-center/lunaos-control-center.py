@@ -868,7 +868,7 @@ def main():
                 update_progress.setRange(0, 100)
                 update_progress.setValue(5)
                 update_progress.setFormat("Preparing transaction…")
-            patterns = re.findall(r"\b(?:upgrading|installing|reinstalling|downgrading)\s+([A-Za-z0-9@._+-]+)\s+\.\.\.", joined)
+            patterns = re.findall(r"\b(?:upgrading|installing|reinstalling|downgrading)\s+([A-Za-z0-9@._+-]+)", joined)
             for package in patterns:
                 update_operation["seen"].add(package)
             if kind == "install" and update_operation["seen"]:
