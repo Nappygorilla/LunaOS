@@ -1,0 +1,21 @@
+[profile]
+id = "creator"
+name = "Creator"
+category = "Media"
+description = "A balanced desktop for recording, editing, and streaming."
+
+[modules]
+security = true
+privacy = true
+performance = true
+gaming = false
+coding = false
+creator = true
+
+[settings]
+power_profile = "balanced"
+swappiness = 30
+
+[sysctl]
+"kernel.kptr_restrict" = 2
+"kernel.dmesg_restrict" = 1

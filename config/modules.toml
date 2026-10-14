@@ -1,0 +1,39 @@
+[base]
+required = true
+package_file = "base.packages"
+description = "Base system and hardware support"
+
+[desktop]
+required = true
+package_file = "desktop.packages"
+description = "KDE Plasma and everyday applications"
+
+[security]
+required = false
+package_file = "security.packages"
+description = "Firewall and security controls"
+
+[privacy]
+required = false
+package_file = "privacy.packages"
+description = "Privacy controls and browser policy management"
+
+[performance]
+required = false
+package_file = "performance.packages"
+description = "Power profiles and reversible performance tuning"
+
+[gaming]
+required = false
+package_file = "gaming.packages"
+description = "GameMode, MangoHud, Gamescope, Wine, graphics utilities"
+
+[coding]
+required = false
+package_file = "coding.packages"
+description = "Compilers, languages, version control, editors"
+
+[creator]
+required = false
+package_file = "creator.packages"
+description = "Streaming, image, and video tools"

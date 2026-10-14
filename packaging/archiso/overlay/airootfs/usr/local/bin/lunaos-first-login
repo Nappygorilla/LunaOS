@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -u
+WALLPAPER=/usr/share/backgrounds/lunaos/lunaos-wallpaper.svg
+command -v plasma-apply-colorscheme >/dev/null 2>&1 && plasma-apply-colorscheme BreezeDark >/dev/null 2>&1 || true
+command -v plasma-apply-wallpaperimage >/dev/null 2>&1 && [ -f "$WALLPAPER" ] && plasma-apply-wallpaperimage "$WALLPAPER" >/dev/null 2>&1 || true
+command -v xdg-user-dirs-update >/dev/null 2>&1 && xdg-user-dirs-update >/dev/null 2>&1 || true
+rm -f "$HOME/.config/autostart/lunaos-first-login.desktop"

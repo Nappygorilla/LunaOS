@@ -1,0 +1,21 @@
+[profile]
+id = "coding"
+name = "Coding"
+category = "Development"
+description = "Balanced power settings, security and privacy controls, and developer tools."
+
+[modules]
+security = true
+privacy = true
+performance = true
+gaming = false
+coding = true
+creator = false
+
+[settings]
+power_profile = "balanced"
+swappiness = 30
+
+[sysctl]
+"kernel.kptr_restrict" = 2
+"kernel.dmesg_restrict" = 1

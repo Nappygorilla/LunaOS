@@ -1,0 +1,13 @@
+[Unit]
+Description=LunaOS live session setup
+After=local-fs.target
+Before=display-manager.service
+ConditionPathExists=!/var/lib/lunaos/live-setup-complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/lunaos-live-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

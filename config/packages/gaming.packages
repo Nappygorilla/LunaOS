@@ -1,0 +1,11 @@
+mesa
+vulkan-icd-loader
+vulkan-intel
+vulkan-radeon
+vulkan-nouveau
+gamescope
+gamemode
+mangohud
+lutris
+wine
+winetricks

@@ -1,0 +1,21 @@
+[profile]
+id = "gaming"
+name = "Gaming"
+category = "Performance"
+description = "GameMode integration, performance power profile, and conservative VM tuning."
+
+[modules]
+security = true
+privacy = true
+performance = true
+gaming = true
+coding = false
+creator = false
+
+[settings]
+power_profile = "performance"
+swappiness = 10
+
+[sysctl]
+"kernel.kptr_restrict" = 2
+"kernel.dmesg_restrict" = 1

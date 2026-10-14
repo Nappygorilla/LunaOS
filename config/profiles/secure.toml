@@ -1,0 +1,21 @@
+[profile]
+id = "secure"
+name = "Secure workstation"
+category = "Security"
+description = "Firewall and allowlisted kernel information restrictions."
+
+[modules]
+security = true
+privacy = true
+performance = false
+gaming = false
+coding = false
+creator = false
+
+[settings]
+power_profile = "balanced"
+swappiness = 60
+
+[sysctl]
+"kernel.kptr_restrict" = 2
+"kernel.dmesg_restrict" = 1
