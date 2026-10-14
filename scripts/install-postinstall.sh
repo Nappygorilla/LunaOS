@@ -34,6 +34,7 @@ install -m 0644 "$ROOT_DIR/assets/lunaos-wallpaper.svg" /usr/share/backgrounds/l
 install -m 0755 "$ROOT_DIR/apps/control-center/lunaos-control-center.py" /usr/lib/lunaos/lunaos-control-center.py
 install -m 0755 "$ROOT_DIR/apps/control-center/lunaos-profile-apply" /usr/lib/lunaos/lunaos-profile-apply
 install -m 0755 "$ROOT_DIR/apps/control-center/lunaos-system-tools" /usr/lib/lunaos/lunaos-system-tools
+install -m 0755 "$ROOT_DIR/apps/control-center/lunaos-update-agent.py" /usr/lib/lunaos/lunaos-update-agent.py
 install -m 0755 "$ROOT_DIR/apps/control-center/lunaos-game-run" /usr/local/bin/lunaos-game-run
 install -m 0755 "$ROOT_DIR/apps/setup/lunaos-firstboot-setup.py" /usr/lib/lunaos/lunaos-firstboot-setup.py
 install -m 0755 "$ROOT_DIR/apps/setup/lunaos-setup-user-helper" /usr/lib/lunaos/lunaos-setup-user-helper
@@ -44,6 +45,8 @@ install -m 0755 "$ROOT_DIR/packaging/archiso/overlay/airootfs/usr/local/bin/luna
 install -m 0644 "$ROOT_DIR/packaging/archiso/overlay/airootfs/usr/share/applications/lunaos-control-center.desktop" /usr/share/applications/lunaos-control-center.desktop
 install -m 0644 "$ROOT_DIR/packaging/archiso/overlay/airootfs/usr/share/polkit-1/actions/org.lunaos.controlcenter.policy" /usr/share/polkit-1/actions/org.lunaos.controlcenter.policy
 install -m 0644 "$ROOT_DIR/packaging/archiso/overlay/airootfs/usr/share/polkit-1/actions/org.lunaos.systemtools.policy" /usr/share/polkit-1/actions/org.lunaos.systemtools.policy
+install -m 0755 "$ROOT_DIR/packaging/archiso/overlay/airootfs/usr/local/bin/lunaos-update-agent" /usr/local/bin/lunaos-update-agent
+install -m 0644 "$ROOT_DIR/packaging/archiso/overlay/airootfs/etc/xdg/autostart/lunaos-update-agent.desktop" /etc/xdg/autostart/lunaos-update-agent.desktop
 install -m 0644 "$ROOT_DIR/packaging/archiso/overlay/airootfs/etc/sddm.conf.d/10-lunaos.conf" /etc/sddm.conf.d/10-lunaos.conf
 systemctl enable NetworkManager.service sddm.service bluetooth.service
 case " $SELECTED " in *" security "*) systemctl enable firewalld.service ;; esac
