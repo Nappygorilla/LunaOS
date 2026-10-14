@@ -216,6 +216,337 @@ def snapshot_create(comment):
     print("Refresh the list or open Timeshift to verify the new restore point.")
 
 
+
+
+# ---- LunaOS update manager -------------------------------------------------
+UPDATE_STATE_FILE = Path("/var/lib/lunaos/update-download-state.json")
+UPDATE_DOWNLOAD_SERVICE = Path("/etc/systemd/system/lunaos-update-download.service")
+UPDATE_DOWNLOAD_TIMER = Path("/etc/systemd/system/lunaos-update-download.timer")
+REBOOT_SERVICE = Path("/etc/systemd/system/lunaos-scheduled-reboot.service")
+REBOOT_TIMER = Path("/etc/systemd/system/lunaos-scheduled-reboot.timer")
+PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9@._+-]{1,128}$")
+VERSION_RE = re.compile(r"^[A-Za-z0-9@._:+~\-]{1,160}$")
+UPDATE_LINE_RE = re.compile(r"^(\S+)\s+(\S+)\s+->\s+(\S+)\s*$")
+SECURITY_CHANGE_RE = re.compile(r"\b(CVE-\d{4}-\d+|security (?:fix|update|issue|advisory)|vulnerabilit(?:y|ies)|privilege escalation|remote code execution)\b", re.I)
+CORE_SYSTEM_RE = re.compile(
+    r"^(?:linux(?:-lts|-zen|-hardened|-rt)?|linux-firmware|glibc|systemd|systemd-libs|pacman|archlinux-keyring|"
+    r"mkinitcpio|grub|sudo|polkit|openssl|filesystem|bash|coreutils|util-linux|kmod|udev|"
+    r"mesa|nvidia(?:-open|-dkms|-lts|-utils|-settings)?|lib32-nvidia-utils|intel-ucode|amd-ucode|"
+    r"plasma-workspace|plasma-desktop|kwin|sddm|dracut|cryptsetup|lvm2|btrfs-progs)$"
+)
+DRIVER_RE = re.compile(r"^(?:xf86-video-.*|nvidia.*|lib32-nvidia.*|mesa.*|vulkan-.*|lib32-vulkan-.*|intel-ucode|amd-ucode|linux-firmware)$")
+DEV_RE = re.compile(r"^(?:git|base-devel|gcc|clang|cmake|gdb|python.*|nodejs|npm|rust|cargo|go|neovim|vim|kate|geany|kdevelop|qtcreator|gnome-builder|docker.*|containerd)$")
+
+
+def sanitize_text(value, limit=30000):
+    # Remove terminal control codes and unsafe control characters from package metadata.
+    value = re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", value or "")
+    value = "".join(ch for ch in value if ch in "\n\t" or ord(ch) >= 32)
+    return value[:limit].strip()
+
+
+def parse_update_output(output):
+    updates = []
+    for line in (output or "").splitlines():
+        match = UPDATE_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        name, old_version, new_version = match.groups()
+        if not PACKAGE_NAME_RE.fullmatch(name) or not VERSION_RE.fullmatch(old_version) or not VERSION_RE.fullmatch(new_version):
+            continue
+        updates.append({"name": name, "old_version": old_version, "new_version": new_version})
+    return updates
+
+
+def cached_update_changelog(package, version):
+    if not PACKAGE_NAME_RE.fullmatch(package) or not VERSION_RE.fullmatch(version):
+        return ""
+    cache_dir = Path("/var/cache/pacman/pkg")
+    if not cache_dir.is_dir():
+        return ""
+    # Epochs are not consistently included in archive filenames.
+    filename_version = version.split(":")[-1]
+    candidates = sorted(
+        cache_dir.glob(f"{package}-{filename_version}-*.pkg.tar.*"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )
+    bsdtar = shutil.which("bsdtar")
+    pacman = shutil.which("pacman")
+    if not bsdtar or not pacman:
+        return ""
+    for archive in candidates[:8]:
+        if archive.name.endswith((".sig", ".part")):
+            continue
+        code, identity, _ = run(
+            [pacman, "-Qp", "--print-format", "%n|%v", str(archive)],
+            timeout=15,
+            check=False,
+        )
+        if code or identity != package + "|" + version:
+            continue
+        code, changelog, _ = run([bsdtar, "-xOf", str(archive), ".CHANGELOG"], timeout=20, check=False)
+        if code == 0 and changelog.strip():
+            return sanitize_text(changelog)
+    return ""
+
+
+def classify_update(package, changelog=""):
+    if SECURITY_CHANGE_RE.search(changelog or ""):
+        return "security", "Security update", True
+    if CORE_SYSTEM_RE.fullmatch(package):
+        category = "Drivers & firmware" if DRIVER_RE.fullmatch(package) else "Operating system"
+        return category.lower().replace(" & ", "-"), category, True
+    if DRIVER_RE.fullmatch(package):
+        return "drivers", "Drivers & graphics", True
+    if DEV_RE.fullmatch(package):
+        return "apps", "Apps & developer tools", False
+    return "apps", "Applications & libraries", False
+
+
+def updates_check():
+    checkupdates = shutil.which("checkupdates")
+    if not checkupdates:
+        raise ToolError("The pacman-contrib package is missing. Rebuild/update LunaOS with pacman-contrib installed.")
+    code, output, error = run([checkupdates, "--nocolor"], timeout=240, check=False)
+    if code not in (0, 2):
+        raise ToolError(error or output or "Could not check for updates.")
+    updates = parse_update_output(output)
+    for item in updates:
+        changelog = cached_update_changelog(item["name"], item["new_version"])
+        item["category_id"], item["category"], item["critical"] = classify_update(item["name"], changelog)
+        item["security"] = item["category_id"] == "security"
+        item["changelog_available"] = bool(changelog)
+        if item["security"]:
+            item["reason"] = "The available package changelog mentions a security issue or CVE."
+        elif item["critical"]:
+            item["reason"] = "This package is part of the operating system, boot process, core libraries, drivers, or desktop foundation."
+        else:
+            item["reason"] = ""
+    emit_json({"updates": updates, "count": len(updates), "checked_at": int(__import__("time").time())})
+
+
+def parse_pacman_info(package):
+    code, output, error = run(["/usr/bin/pacman", "-Qi", package], timeout=20, check=False)
+    info = {"description": "", "url": "", "installed_version": ""}
+    if code:
+        return info
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if key == "Description":
+            info["description"] = value
+        elif key == "URL":
+            info["url"] = value
+        elif key == "Version":
+            info["installed_version"] = value
+    if not re.match(r"^https?://", info["url"], re.I):
+        info["url"] = ""
+    return info
+
+
+def updates_details(package, old_version, new_version):
+    if not PACKAGE_NAME_RE.fullmatch(package) or not VERSION_RE.fullmatch(old_version) or not VERSION_RE.fullmatch(new_version):
+        raise ToolError("Invalid package name or version.")
+    meta = parse_pacman_info(package)
+    changelog = cached_update_changelog(package, new_version)
+    category_id, category, critical = classify_update(package, changelog)
+    if changelog:
+        changelog_text = changelog
+        source = "Package-provided changelog from the downloaded update archive"
+    else:
+        changelog_text = (
+            "No per-release .CHANGELOG was found in the downloaded package cache. Arch packages do not all ship "
+            "a changelog, so LunaOS will not invent release notes. Use the official project/package website below "
+            "for upstream release notes. Download the updates to let LunaOS check whether a changelog is included."
+        )
+        source = "Not supplied by this package"
+    emit_json({
+        "name": package,
+        "old_version": old_version,
+        "new_version": new_version,
+        "description": meta["description"],
+        "url": meta["url"],
+        "category": category,
+        "category_id": category_id,
+        "critical": critical,
+        "security": category_id == "security",
+        "changelog": changelog_text,
+        "changelog_source": source,
+        "reason": "Security language was found in the package changelog." if category_id == "security" else (
+            "This update affects operating-system, driver, boot, core-library, or desktop-foundation packages." if critical else ""
+        ),
+    })
+
+
+def record_download_state(ready, packages, message):
+    import time
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data = {
+        "schema": 1,
+        "updated_at": int(time.time()),
+        "ready": bool(ready),
+        "packages": packages,
+        "message": sanitize_text(message, 4000),
+    }
+    atomic_write(UPDATE_STATE_FILE, json.dumps(data, indent=2) + "\n", 0o644)
+
+
+def updates_download():
+    checkupdates = shutil.which("checkupdates")
+    if not checkupdates:
+        raise ToolError("pacman-contrib/checkupdates is not installed.")
+    code, output, error = run([checkupdates, "--download", "--nocolor"], timeout=2400, check=False)
+    packages = parse_update_output(output)
+    if code == 2:
+        record_download_state(False, [], "No updates are available.")
+        print("No updates are available.")
+        return 0
+    if code:
+        record_download_state(False, [], error or output or "Background download failed.")
+        raise ToolError(error or output or "Update downloads failed.")
+    record_download_state(bool(packages), packages, output or "Update packages downloaded.")
+    print(sanitize_text(output) or ("Updates downloaded and ready to review." if packages else "No updates were listed."))
+    return 0
+
+
+def run_streaming(argv, timeout=3600):
+    import time
+    try:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except OSError as exc:
+        raise ToolError(f"Could not start {argv[0]}: {exc}") from exc
+    started = time.monotonic()
+    try:
+        while True:
+            line = process.stdout.readline()
+            if line:
+                print(sanitize_text(line, 8000), end="\n" if not line.endswith("\n") else "", flush=True)
+            if process.poll() is not None:
+                remainder = process.stdout.read()
+                if remainder:
+                    print(sanitize_text(remainder, 16000), end="", flush=True)
+                break
+            if time.monotonic() - started > timeout:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                raise ToolError("Update operation timed out.")
+    finally:
+        if process.stdout:
+            process.stdout.close()
+    return process.returncode
+
+
+def updates_install():
+    import time
+    require_root()
+    if not shutil.which("pacman"):
+        raise ToolError("pacman is unavailable; this updater only supports Arch-based LunaOS.")
+    print("LUNAOS_PHASE:PREPARING:5", flush=True)
+    print("Checking repository databases and preparing the full system upgrade…", flush=True)
+    code = run_streaming(["/usr/bin/pacman", "-Syu", "--noconfirm", "--color", "never"], timeout=3600)
+    if code:
+        raise ToolError(f"pacman stopped with exit code {code}. Review the log before retrying.")
+    if UPDATE_STATE_FILE.is_file():
+        state = {"schema": 1, "updated_at": int(time.time()), "ready": False, "packages": [], "message": "Update transaction completed."}
+        atomic_write(UPDATE_STATE_FILE, json.dumps(state, indent=2) + "\n", 0o644)
+    print("LUNAOS_PHASE:COMPLETE:100", flush=True)
+    print("System upgrade completed. Review pacman output and reboot if the updated kernel or core system requires it.", flush=True)
+
+
+def write_systemd_timer(service_path, timer_path, service_text, timer_text):
+    atomic_write(service_path, service_text, 0o644)
+    atomic_write(timer_path, timer_text, 0o644)
+    run(["/usr/bin/systemctl", "daemon-reload"], timeout=60)
+    run(["/usr/bin/systemctl", "enable", "--now", timer_path.name], timeout=60)
+
+
+def configure_download_schedule(time_text):
+    require_root()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", time_text):
+        raise ToolError("Choose a valid 24-hour time in HH:MM format.")
+    hour, minute = map(int, time_text.split(":"))
+    marker = "# Managed by LunaOS Control Center."
+    service_text = (
+        marker + "\n[Unit]\nDescription=LunaOS background update download\n"
+        "After=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\n"
+        "ExecStart=/usr/lib/lunaos/lunaos-system-tools updates-background-download\n"
+    )
+    timer_text = (
+        marker + "\n[Unit]\nDescription=Scheduled LunaOS update download\n\n[Timer]\n"
+        f"OnCalendar=*-*-* {hour:02d}:{minute:02d}:00\nPersistent=true\nAccuracySec=1min\n"
+        "Unit=lunaos-update-download.service\n\n[Install]\nWantedBy=timers.target\n"
+    )
+    write_systemd_timer(UPDATE_DOWNLOAD_SERVICE, UPDATE_DOWNLOAD_TIMER, service_text, timer_text)
+    print(f"Background update downloads scheduled daily at {hour:02d}:{minute:02d}.")
+
+
+def disable_download_schedule():
+    require_root()
+    run(["/usr/bin/systemctl", "disable", "--now", UPDATE_DOWNLOAD_TIMER.name], timeout=60, check=False)
+    for path in (UPDATE_DOWNLOAD_TIMER, UPDATE_DOWNLOAD_SERVICE):
+        if path.is_file() and path.read_text(encoding="utf-8", errors="replace").startswith("# Managed by LunaOS Control Center."):
+            path.unlink()
+    run(["/usr/bin/systemctl", "daemon-reload"], timeout=60, check=False)
+    print("Scheduled background update downloads disabled.")
+
+
+def schedule_reboot(datetime_text):
+    import datetime as dt
+    require_root()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", datetime_text):
+        raise ToolError("Choose a valid local date and time.")
+    try:
+        when = dt.datetime.strptime(datetime_text, "%Y-%m-%d %H:%M")
+    except ValueError as exc:
+        raise ToolError("Invalid scheduled reboot date/time.") from exc
+    now = dt.datetime.now()
+    if when <= now + dt.timedelta(minutes=2):
+        raise ToolError("Choose a reboot time at least three minutes in the future.")
+    if when > now + dt.timedelta(days=60):
+        raise ToolError("Reboot scheduling is limited to the next 60 days.")
+    calendar = when.strftime("%Y-%m-%d %H:%M:00")
+    marker = "# Managed by LunaOS Control Center."
+    service_text = (
+        marker + "\n[Unit]\nDescription=User-confirmed scheduled LunaOS reboot\n"
+        "After=multi-user.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/systemctl reboot\n"
+    )
+    timer_text = (
+        marker + "\n[Unit]\nDescription=User-confirmed scheduled LunaOS reboot\n\n[Timer]\n"
+        f"OnCalendar={calendar}\nPersistent=false\nAccuracySec=10s\n"
+        "Unit=lunaos-scheduled-reboot.service\n\n[Install]\nWantedBy=timers.target\n"
+    )
+    write_systemd_timer(REBOOT_SERVICE, REBOOT_TIMER, service_text, timer_text)
+    print("Reboot scheduled for " + calendar + " local time. Cancel it from Control Center any time before it runs.")
+
+
+def cancel_scheduled_reboot():
+    require_root()
+    run(["/usr/bin/systemctl", "disable", "--now", REBOOT_TIMER.name], timeout=60, check=False)
+    for path in (REBOOT_TIMER, REBOOT_SERVICE):
+        if path.is_file() and path.read_text(encoding="utf-8", errors="replace").startswith("# Managed by LunaOS Control Center."):
+            path.unlink()
+    run(["/usr/bin/systemctl", "daemon-reload"], timeout=60, check=False)
+    print("Scheduled reboot cancelled.")
+
+
+def reboot_schedule_status():
+    if not REBOOT_TIMER.is_file():
+        emit_json({"scheduled": False, "when": ""})
+        return
+    text = REBOOT_TIMER.read_text(encoding="utf-8", errors="replace")
+    if not text.startswith("# Managed by LunaOS Control Center."):
+        emit_json({"scheduled": False, "when": "", "error": "A timer exists but is not managed by LunaOS."})
+        return
+    match = re.search(r"^OnCalendar=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):00$", text, re.M)
+    emit_json({"scheduled": bool(match), "when": match.group(1) if match else ""})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -231,9 +562,24 @@ def main():
     commands.add_parser("snapshot-list")
     snap_create = commands.add_parser("snapshot-create")
     snap_create.add_argument("comment")
+    commands.add_parser("updates-check")
+    detail_parser = commands.add_parser("updates-details")
+    detail_parser.add_argument("package")
+    detail_parser.add_argument("old_version")
+    detail_parser.add_argument("new_version")
+    commands.add_parser("updates-download")
+    commands.add_parser("updates-background-download")
+    commands.add_parser("updates-install")
+    schedule_download_parser = commands.add_parser("download-schedule")
+    schedule_download_parser.add_argument("time")
+    commands.add_parser("download-schedule-disable")
+    reboot_schedule_parser = commands.add_parser("reboot-schedule")
+    reboot_schedule_parser.add_argument("datetime")
+    commands.add_parser("reboot-schedule-disable")
+    commands.add_parser("reboot-schedule-status")
     args = parser.parse_args()
 
-    read_only = args.command in {"power-status", "fan-status"}
+    read_only = args.command in {"power-status", "fan-status", "updates-check", "updates-details", "reboot-schedule-status"}
     try:
         if not read_only:
             require_root()
@@ -255,6 +601,24 @@ def main():
             snapshot_list()
         elif args.command == "snapshot-create":
             snapshot_create(args.comment)
+        elif args.command == "updates-check":
+            updates_check()
+        elif args.command == "updates-details":
+            updates_details(args.package, args.old_version, args.new_version)
+        elif args.command in {"updates-download", "updates-background-download"}:
+            return updates_download()
+        elif args.command == "updates-install":
+            updates_install()
+        elif args.command == "download-schedule":
+            configure_download_schedule(args.time)
+        elif args.command == "download-schedule-disable":
+            disable_download_schedule()
+        elif args.command == "reboot-schedule":
+            schedule_reboot(args.datetime)
+        elif args.command == "reboot-schedule-disable":
+            cancel_scheduled_reboot()
+        elif args.command == "reboot-schedule-status":
+            reboot_schedule_status()
         return 0
     except (ToolError, OSError, ValueError) as exc:
         print("LunaOS system tools: " + str(exc), file=sys.stderr)
