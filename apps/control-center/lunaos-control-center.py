@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 import tomllib
 
-from PySide6.QtCore import Qt, QDateTime, QTime, QProcess, QTimer
+from PySide6.QtCore import Qt, QDateTime, QTime, QProcess, QTimer, QEvent, QObject
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -628,7 +628,8 @@ def main():
     updates_layout.addWidget(updates_title)
     updates_layout.addWidget(QLabel(
         "Review individual package versions and available changelogs before applying a full Arch Linux system upgrade. "
-        "LunaOS highlights security and operating-system updates because they can affect app compatibility, drivers, boot, or core libraries."
+        "LunaOS highlights security and operating-system updates because they can affect app compatibility, drivers, boot, or core libraries. "
+        "Security labels use package-provided changelogs where available plus conservative core-package rules; Arch does not provide a complete security flag for every package."
     ))
 
     updates_split = QHBoxLayout()
@@ -925,6 +926,19 @@ def main():
     update_process.readyReadStandardOutput.connect(handle_update_output)
     update_process.finished.connect(finish_update_process)
     update_process.errorOccurred.connect(update_process_error)
+
+    class UpdateCloseGuard(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Type.Close and update_operation.get("kind") == "install":
+                QMessageBox.warning(
+                    window, "Update installation is running",
+                    "Keep Control Center open until the package transaction finishes. Closing it now could interrupt the system upgrade."
+                )
+                return True
+            return False
+
+    close_guard = UpdateCloseGuard(window)
+    window.installEventFilter(close_guard)
 
     def begin_install(prepared=False, scheduled=False):
         if not update_entries:
