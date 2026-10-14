@@ -96,3 +96,10 @@ The LunaOS installer lets users skip desktop personalization and personal-accoun
 Administrator permission is opt-in during installation. If a user skips the account step, LunaOS does not create an administrator account behind their back. To have administrator access, select personal account creation in the installer and explicitly enable the administrator option.
 
 Read docs/first-boot-and-accounts.md and docs/security-model.md before testing. This feature is experimental and needs an end-to-end Archinstall VM test.
+
+
+## Backup & Recovery and Luna Dev Hub
+
+The Control Center's Overview tab provides shortcuts to the main system tasks. **Snapshots** keeps Timeshift system restore points separate from **Personal file backups**, which archives only folders selected by the user. Personal backups run without root access, skip common cache/build folders and symbolic links, and restore only into a new timestamped folder after rejecting unsafe archive paths and special files. Review restored files before moving them into your home directory. Keep an additional copy on a separate drive or trusted storage location; an archive on the same disk is not protection against disk failure.
+
+The **Developer tools** tab also acts as a lightweight Luna Dev Hub: installed IDEs can be launched directly, and a selected project folder can be opened in an installed IDE. The install catalog remains limited to allowlisted official Arch repository bundles. The Overview tab links these tools with power, cooling, snapshots/backups, profiles, and updates.
