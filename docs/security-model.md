@@ -11,3 +11,10 @@ Current allowlists:
 All subprocess calls use argument arrays and timeouts. Do not add shell=True, bash -c, arbitrary systemctl names, arbitrary sysctl keys, remote commands, or shell snippets in profile files.
 
 The helper records original values in /var/lib/lunaos/control-center-state.json. Its managed sysctl file is /etc/sysctl.d/99-lunaos-profile.conf; if that path exists and is not marked as LunaOS-owned, the helper refuses to overwrite it. This is a development baseline, not a full system backup or a security audit. Add and test transactional rollback before a stable release.
+
+
+## Installer and guest account
+
+The live installer account is not in the wheel group. Its sudoers allowance is limited to launching /usr/bin/archinstall; the live ISO is an installation environment, not a trusted multi-user security boundary. The installed guest account is separately created by Archinstall with sudo=false and is explicitly checked not to be in wheel before SDDM autologin is enabled.
+
+If personal-account creation is skipped, no administrator account is created automatically. The first-run helper has one purpose: create one standard personal user from a bounded JSON request. It never accepts shell commands, arbitrary groups, an administrator flag, or sysctl/service settings. It never modifies wheel or sudoers. The PolicyKit action is intentionally able to create only a non-admin account; administrative account creation must be explicitly selected during installation.

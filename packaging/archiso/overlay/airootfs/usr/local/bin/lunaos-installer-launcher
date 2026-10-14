@@ -1,15 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if ! command -v archinstall >/dev/null 2>&1; then
-  kdialog --error 'archinstall is unavailable.' --title 'LunaOS Installer' || true
-  exit 1
-fi
-message='This opens the guided Arch Linux installer. It can erase the disk you select. Back up important files and review every disk choice.'
-if command -v kdialog >/dev/null 2>&1; then
-  kdialog --warningyesno "$message" --title 'Install LunaOS' || exit 0
-else
-  echo "$message"
-  read -r -p 'Type YES to launch installer: ' answer
-  [ "$answer" = YES ] || exit 0
-fi
-exec konsole --hold -e bash -lc 'sudo archinstall; echo "Installer exited. Review messages before rebooting."; read -r -p "Press Enter..." _'
+exec /usr/bin/python /usr/lib/lunaos/lunaos-installer-setup.py "$@"

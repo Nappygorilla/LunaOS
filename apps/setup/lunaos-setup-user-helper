@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Create one standard personal account. This helper can never grant admin rights."""
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+STATE_DIR = Path("/etc/lunaos")
+LOCK_FILE = STATE_DIR / "personal-account-created"
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}\$?$")
+RESERVED = {"root", "nobody", "luna", "luna-guest", "bin", "daemon", "adm", "mail", "ftp", "http"}
+
+
+class SetupError(RuntimeError):
+    pass
+
+
+def run(argv, *, input_text=None, check=True):
+    result = subprocess.run(argv, input=input_text, text=True, capture_output=True, timeout=30, check=False)
+    if check and result.returncode:
+        raise SetupError((result.stderr or result.stdout or f"{argv[0]} failed").strip())
+    return result
+
+
+def existing_personal_users():
+    users = []
+    for entry in pwd.getpwall():
+        if entry.pw_uid < 1000 or entry.pw_uid == 65534 or entry.pw_name == "luna-guest":
+            continue
+        if entry.pw_shell in {"/usr/bin/nologin", "/sbin/nologin", "/bin/false"}:
+            continue
+        users.append(entry.pw_name)
+    return users
+
+
+def atomic_write(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix="." + path.name, dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except Exception:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def main():
+    if os.geteuid() != 0:
+        print("This helper must be launched through PolicyKit.", file=sys.stderr)
+        return 2
+    try:
+        raw = sys.stdin.read(8192)
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"username", "password"}:
+            raise SetupError("Only username and password fields are accepted.")
+        username = payload.get("username")
+        password = payload.get("password")
+        if not isinstance(username, str) or not USERNAME_RE.fullmatch(username) or username in RESERVED:
+            raise SetupError("Invalid or reserved username.")
+        if not isinstance(password, str) or len(password) < 12 or ":" in password or "\n" in password or "\r" in password:
+            raise SetupError("Password must be at least 12 characters and contain no colon or newline.")
+        try:
+            pwd.getpwnam(username)
+            raise SetupError("That username already exists.")
+        except KeyError:
+            pass
+        if LOCK_FILE.exists() or existing_personal_users():
+            raise SetupError("A personal account already exists. Refusing to create another first account.")
+        run(["/usr/bin/useradd", "--create-home", "--shell", "/bin/bash", username])
+        try:
+            run(["/usr/bin/chpasswd"], input_text=f"{username}:{password}\n")
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            atomic_write(LOCK_FILE, username + "\n", 0o600)
+        except Exception:
+            run(["/usr/bin/userdel", "--remove", username], check=False)
+            raise
+        print(f"Created standard personal account {username}. Administrator access was not granted.")
+        return 0
+    except (SetupError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print("LunaOS account setup refused: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
