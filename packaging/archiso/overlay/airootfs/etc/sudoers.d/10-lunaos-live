@@ -1,2 +1,3 @@
-# Disposable live account only. Never copy to an installed system.
-luna ALL=(ALL:ALL) NOPASSWD: ALL
+# Live installer convenience only; does not grant general sudo access.
+# This permission applies to the disposable live image, not the installed system.
+luna ALL=(root) NOPASSWD: /usr/bin/archinstall

@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""One-time first-user creator. No arbitrary commands or groups are accepted."""
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+STATE_DIR = Path("/etc/lunaos")
+LOCK_FILE = STATE_DIR / "personal-account-created"
+SUDOERS_FILE = Path("/etc/sudoers.d/10-lunaos-wheel")
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}\$?$")
+RESERVED = {"root", "nobody", "luna", "luna-guest", "bin", "daemon", "adm", "mail", "ftp", "http"}
+
+
+class SetupError(RuntimeError):
+    pass
+
+
+def run(argv, *, input_text=None, check=True):
+    result = subprocess.run(argv, input=input_text, text=True, capture_output=True, timeout=30, check=False)
+    if check and result.returncode:
+        raise SetupError((result.stderr or result.stdout or f"{argv[0]} failed").strip())
+    return result
+
+
+def existing_personal_users():
+    users = []
+    for entry in pwd.getpwall():
+        if entry.pw_uid < 1000 or entry.pw_uid == 65534 or entry.pw_name == "luna-guest":
+            continue
+        if entry.pw_shell in {"/usr/bin/nologin", "/sbin/nologin", "/bin/false"}:
+            continue
+        users.append(entry.pw_name)
+    return users
+
+
+def atomic_write(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix="." + path.name, dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except Exception:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def main():
+    if os.geteuid() != 0:
+        print("This helper must be launched through PolicyKit.", file=sys.stderr)
+        return 2
+    try:
+        raw = sys.stdin.read(8192)
+        payload = json.loads(raw)
+        username = payload.get("username")
+        password = payload.get("password")
+        administrator = payload.get("administrator")
+        if not isinstance(username, str) or not USERNAME_RE.fullmatch(username) or username in RESERVED:
+            raise SetupError("Invalid or reserved username.")
+        if not isinstance(password, str) or len(password) < 12 or ":" in password or "\n" in password or "\r" in password:
+            raise SetupError("Password must be at least 12 characters and contain no colon or newline.")
+        if type(administrator) is not bool:
+            raise SetupError("Administrator choice must be true or false.")
+        if LOCK_FILE.exists() or existing_personal_users():
+            raise SetupError("A personal account already exists. Refusing to create another first account.")
+        if administrator:
+            result = run(["/usr/bin/getent", "group", "wheel"], check=False)
+            if result.returncode != 0:
+                raise SetupError("The wheel group is unavailable.")
+            if SUDOERS_FILE.exists():
+                content = SUDOERS_FILE.read_text(encoding="utf-8")
+                if not content.startswith("# Managed by LunaOS first-user setup."):
+                    raise SetupError("Refusing to overwrite an unmanaged sudoers file.")
+        run(["/usr/bin/useradd", "--create-home", "--shell", "/bin/bash", username])
+        try:
+            run(["/usr/bin/chpasswd"], input_text=f"{username}:{password}\n")
+            if administrator:
+                run(["/usr/bin/usermod", "-aG", "wheel", username])
+                atomic_write(SUDOERS_FILE, "# Managed by LunaOS first-user setup.\n%wheel ALL=(ALL:ALL) ALL\n", 0o440)
+                run(["/usr/bin/visudo", "-cf", str(SUDOERS_FILE)])
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            atomic_write(LOCK_FILE, username + "\n", 0o600)
+        except Exception:
+            run(["/usr/bin/userdel", "--remove", username], check=False)
+            raise
+        print(f"Created personal account {username}. Administrator access: {'enabled by explicit selection' if administrator else 'not granted'}.")
+        return 0
+    except (SetupError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print("LunaOS account setup refused: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

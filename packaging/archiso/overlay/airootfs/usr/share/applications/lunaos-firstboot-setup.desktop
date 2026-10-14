@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LunaOS First-run Setup
+Comment=Optional desktop settings and personal account creation
+Exec=lunaos-firstboot-setup
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
