@@ -70,7 +70,7 @@ Docker is not silently granted root-equivalent group access. Software fan contro
 
 ## System updates
 
-The **Updates** tab shows each pending package, its old/new version, category, description, and package-provided changelog when available. LunaOS flags security-related release notes and core OS, boot, driver, firmware, graphics, and desktop-foundation packages for a warning before installation. If a package does not ship a detailed changelog, LunaOS says so and gives its project/package homepage instead of fabricating notes.
+The **Updates** tab shows each pending package, its old/new version, category, description, and package-provided changelog when available. LunaOS flags security-related release notes and core OS, boot, driver, firmware, graphics, and desktop-foundation packages for a warning before installation. Security labels come from package-provided release-note text plus conservative rules for sensitive core packages; Arch's standard package metadata is not a complete security-advisory feed, so this is not a guarantee that every security fix will be identified. If a package does not ship a detailed changelog, LunaOS says so and gives its project/package homepage instead of fabricating notes.
 
 Arch is rolling-release and does not support partial upgrades. The updater therefore installs a full system upgrade, even when one visible package is an everyday developer tool such as Git. Before installation, the manager downloads the pending packages so it can inspect their package-provided changelogs, then shows a critical compatibility warning when a security or system component is included. Downloads and installation have visible progress feedback.
 
